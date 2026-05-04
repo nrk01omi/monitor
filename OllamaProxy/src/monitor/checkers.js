@@ -7,21 +7,13 @@
 
 const axios = require('axios');
 const net = require('node:net');
-const Docker = require('dockerode');
 
-let _docker = null;
-function getDocker() {
-  if (_docker) return _docker;
-  // socketPath defaults to /var/run/docker.sock on Linux; allow override via env
-  // for Windows/Mac dev boxes that expose Docker over TCP.
-  const host = process.env.DOCKER_HOST;
-  if (host && host.startsWith('tcp://')) {
-    const u = new URL(host);
-    _docker = new Docker({ host: u.hostname, port: parseInt(u.port, 10) || 2375 });
-  } else {
-    _docker = new Docker({ socketPath: process.env.DOCKER_SOCKET || '/var/run/docker.sock' });
-  }
-  return _docker;
+function portainerEnv() {
+  const base = (process.env.PORTAINER_URL || '').replace(/\/$/, '');
+  const eid  = process.env.PORTAINER_ENDPOINT_ID;
+  const key  = process.env.PORTAINER_API_KEY;
+  if (!base || !eid || !key) return null;
+  return { base, eid, key };
 }
 
 async function checkDocker(target) {
@@ -30,20 +22,49 @@ async function checkDocker(target) {
   if (!name) {
     return { id: target.id, status: 'down', latency_ms: null, detail: {}, error: 'container_name not set' };
   }
+  const env = portainerEnv();
+  if (!env) {
+    return {
+      id: target.id, status: 'down', latency_ms: null, detail: {},
+      error: 'PORTAINER_URL/PORTAINER_ENDPOINT_ID/PORTAINER_API_KEY not set',
+    };
+  }
+  const url = `${env.base}/api/endpoints/${env.eid}/docker/containers/${encodeURIComponent(name)}/json`;
+  const timeout = (cfg.timeout_seconds ?? 5) * 1000;
+  const start = Date.now();
   try {
-    const container = getDocker().getContainer(name);
-    const info = await container.inspect();
+    const resp = await axios.get(url, {
+      timeout,
+      headers: { 'X-API-Key': env.key },
+      validateStatus: () => true,
+    });
+    const latency = Date.now() - start;
+    if (resp.status === 404) {
+      return { id: target.id, status: 'down', latency_ms: latency, detail: {}, error: 'container not found' };
+    }
+    if (resp.status === 401 || resp.status === 403) {
+      return {
+        id: target.id, status: 'down', latency_ms: latency, detail: {},
+        error: `Portainer auth failed (HTTP ${resp.status})`,
+      };
+    }
+    if (resp.status < 200 || resp.status >= 300) {
+      return {
+        id: target.id, status: 'down', latency_ms: latency, detail: {},
+        error: `Portainer HTTP ${resp.status}`,
+      };
+    }
+    const info = resp.data || {};
     const state = info.State || {};
     const docker_status = state.Status || 'unknown';
     const running = state.Running === true;
     const restart_count = info.RestartCount ?? 0;
     const started_at = state.StartedAt || '';
-
     if (!running) {
       return {
         id: target.id,
         status: 'down',
-        latency_ms: null,
+        latency_ms: latency,
         detail: { docker_status, restart_count },
         error: `container is ${docker_status}`,
       };
@@ -52,19 +73,18 @@ async function checkDocker(target) {
     return {
       id: target.id,
       status,
-      latency_ms: null,
+      latency_ms: latency,
       detail: { docker_status, restart_count, started_at },
       error: null,
     };
   } catch (err) {
-    // dockerode errors carry .statusCode for HTTP, .code for socket issues
-    const notFound = err.statusCode === 404;
+    const isTimeout = err.code === 'ECONNABORTED' || /timeout/i.test(err.message || '');
     return {
       id: target.id,
       status: 'down',
       latency_ms: null,
       detail: {},
-      error: notFound ? 'container not found' : (err.message || String(err)),
+      error: isTimeout ? 'timeout' : (err.code || err.message || String(err)),
     };
   }
 }

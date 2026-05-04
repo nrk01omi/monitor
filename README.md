@@ -32,10 +32,19 @@ docker compose up -d --build
 ```
 
 [OllamaProxy/docker-compose.yml](OllamaProxy/docker-compose.yml) は次をマウント:
-- `/var/run/docker.sock:ro` — Docker checker がコンテナ状態を読むため
 - 名前付き volume `ollama-proxy-data` — SQLite DB / アーカイブ / ログ
 
-`n8n_default` external network に参加する設定が入っているので、同じネットワーク上のコンテナ名で HTTP/Docker チェックできます。
+Docker コンテナの死活は **Portainer API 経由**で取ります(直接 `/var/run/docker.sock` をマウントしない)。NAS のグループ権限問題を避けるためです。Portainer で API トークンを発行して `.env` または compose の environment に設定:
+
+```env
+PORTAINER_URL=http://portainer:9000
+PORTAINER_ENDPOINT_ID=3
+PORTAINER_API_KEY=ptr_xxxxxxxxxxxxxxxxxxxx
+```
+
+トークン発行は Portainer 右上ユーザ名 → My account → Access tokens から。表示は1回だけなので控えること。
+
+`n8n_default` external network に参加する設定が入っているので、同じネットワーク上のコンテナ名で HTTP/Portainer チェックできます。
 
 ### 初回起動時の seed
 
@@ -56,6 +65,9 @@ docker compose up -d --build
 | `ARCHIVE_ENABLED` | 1 | 03:00 JST の自動アーカイブ |
 | `ARCHIVE_RETENTION_DAYS` | 30 | これより古いものを NDJSON.gz に出力後 DELETE |
 | `ARCHIVE_HOUR_JST` | 3 | アーカイブ実行時刻 (0..23) |
+| `PORTAINER_URL` | `http://portainer:9000` | Portainer のベース URL |
+| `PORTAINER_ENDPOINT_ID` | `3` | `/api/endpoints/{id}` の ID |
+| `PORTAINER_API_KEY` | (なし) | Portainer の access token (`ptr_...`) |
 
 ## API 早見表
 
@@ -83,7 +95,9 @@ Ollama 互換のパスはすべて自動ルーティング。`/api/tags` `/v1/mo
 cd OllamaProxy
 npm install
 $env:MONITOR_POLL_SECONDS = "5"
-$env:DOCKER_SOCKET = "//./pipe/docker_engine"   # Windows: Docker Desktop named pipe
+$env:PORTAINER_URL = "http://192.168.0.198:9000"
+$env:PORTAINER_ENDPOINT_ID = "3"
+$env:PORTAINER_API_KEY = "ptr_xxxxxxxxxxxxxxxxxxxx"
 npm start
 ```
 
@@ -91,8 +105,14 @@ npm start
 
 ## トラブルシュート
 
-**Docker socket が読めない (`ENOENT`)**
-コンテナに `/var/run/docker.sock:ro` が正しくマウントされているか確認。UGREEN/Synology は `docker.sock` の所有グループが特殊な場合があるので、必要なら `group_add` を追加。
+**Docker チェックで `Portainer auth failed (HTTP 401/403)`**
+`PORTAINER_API_KEY` が空 or 失効。Portainer で再発行して compose の env に再投入し `docker compose up -d` で再起動。
+
+**Docker チェックで `Portainer HTTP 404` / `container not found`**
+`PORTAINER_ENDPOINT_ID` が違う (Portainer 画面 URL の `/endpoints/{id}/` で確認)、または `monitor_targets.config.container_name` が実コンテナ名と不一致。
+
+**Docker チェックで `ECONNREFUSED` / `ENOTFOUND`**
+`PORTAINER_URL` が ollama-proxy コンテナから到達不能。Portainer と同じネットワークに参加しているか、`http://portainer:9000` で名前解決できるか確認。host 経由で叩くなら `http://host.docker.internal:9000` または NAS の LAN IP を直書き。
 
 **Topology で全部 down**
 Compose が `n8n_default` network に参加しているか、`monitor_targets.config.url` がコンテナ名(=サービス名)になっているか。

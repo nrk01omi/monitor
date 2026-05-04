@@ -12,8 +12,6 @@ services:
       #   docker compose down  (data persists)
       #   docker compose down -v  (data wiped)
       - ollama-proxy-data:/app/data
-      # Docker socket — read-only is enough for the infra monitor's docker checker
-      - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
       # OLLAMA_HOST is consumed only on first boot to seed the upstreams table.
       # After that, manage upstreams from the dashboard. host.docker.internal
@@ -22,6 +20,11 @@ services:
       # Monitor poll cadence + retention. Override per environment if needed.
       MONITOR_POLL_SECONDS: ${MONITOR_POLL_SECONDS:-10}
       MONITOR_RETENTION_DAYS: ${MONITOR_RETENTION_DAYS:-7}
+      # Portainer API — used by the docker checker instead of /var/run/docker.sock.
+      # Create an access token in Portainer (My account → Access tokens) and put it in .env.
+      PORTAINER_URL: ${PORTAINER_URL:-http://portainer:9000}
+      PORTAINER_ENDPOINT_ID: ${PORTAINER_ENDPOINT_ID:-3}
+      PORTAINER_API_KEY: ${PORTAINER_API_KEY:-}
     extra_hosts:
       # Linux hosts need this to make host.docker.internal resolve.
       - "host.docker.internal:host-gateway"

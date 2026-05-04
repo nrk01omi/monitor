@@ -1,0 +1,44 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Launch OllamaProxy",
+      "program": "${workspaceFolder}/OllamaProxy/src/server.js",
+      "cwd": "${workspaceFolder}/OllamaProxy",
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**"],
+      "runtimeArgs": ["--no-warnings=ExperimentalWarning"],
+      "envFile": "${workspaceFolder}/.vscode/.env",
+      "env": {
+        "MONITOR_POLL_SECONDS": "5",
+        "PROXY_PORT": "11435",
+        "DASHBOARD_PORT": "3005",
+        "OLLAMA_HOST": "host.docker.internal:11434",
+        "PORTAINER_URL": "http://192.168.0.198:9000",
+        "PORTAINER_ENDPOINT_ID": "3"
+      }
+    },
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Launch OllamaProxy (watch)",
+      "program": "${workspaceFolder}/OllamaProxy/src/server.js",
+      "cwd": "${workspaceFolder}/OllamaProxy",
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**"],
+      "runtimeArgs": ["--no-warnings=ExperimentalWarning", "--watch"],
+      "restart": true,
+      "envFile": "${workspaceFolder}/.vscode/.env",
+      "env": {
+        "MONITOR_POLL_SECONDS": "5",
+        "PROXY_PORT": "11435",
+        "DASHBOARD_PORT": "3005",
+        "OLLAMA_HOST": "host.docker.internal:11434",
+        "PORTAINER_URL": "http://192.168.0.198:9000",
+        "PORTAINER_ENDPOINT_ID": "3"
+      }
+    }
+  ]
+}
