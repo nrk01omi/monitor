@@ -1,0 +1,18 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Ollama Proxy + Dashboard",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/server.js",
+      "runtimeArgs": ["--no-warnings=ExperimentalWarning"],
+      "console": "integratedTerminal",
+      "serverReadyAction": {
+        "pattern": "Dashboard.*http://localhost:([0-9]+)",
+        "uriFormat": "http://localhost:%s",
+        "action": "openExternally"
+      }
+    }
+  ]
+}

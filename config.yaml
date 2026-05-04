@@ -1,0 +1,80 @@
+# /volume2/docker/monitor/config.yaml
+# 監視対象をここで宣言する。コードを触らずに対象を追加できる。
+
+poll_interval_seconds: 10
+history_retention_days: 7
+
+targets:
+  # === NAS 上の Docker コンテナ ===
+  # Docker socket 経由でチェック (high speed, no network)
+  - id: scan-worker
+    name: scan-worker
+    type: docker
+    container_name: scan-worker
+    group: nas-docker
+
+  - id: n8n
+    name: n8n
+    type: docker
+    container_name: n8n
+    group: nas-docker
+
+  - id: dify-api
+    name: Dify API
+    type: docker
+    container_name: dify-api
+    group: nas-docker
+
+  - id: portainer
+    name: Portainer
+    type: docker
+    container_name: portainer
+    group: nas-docker
+
+  # === VM 上のサービス ===
+  # HTTP health endpoint をポーリング
+  - id: openclaw
+    name: OpenClaw
+    type: http
+    url: http://192.168.1.50:8080/health
+    timeout_seconds: 5
+    group: vm
+
+  # === OllamaProxyMonitor (集約点) ===
+  # この一個のチェックで Ollama 群の状態も取れる
+  - id: ollama-proxy
+    name: OllamaProxyMonitor
+    type: ollama_proxy
+    url: http://ollama-proxy:9000   # Docker network 内
+    backends_endpoint: /api/backends
+    health_endpoint: /api/health
+    timeout_seconds: 5
+    group: llm-proxy
+
+  # === 周辺機器 ===
+  - id: canon-printer
+    name: Canon MF272dw
+    type: tcp
+    host: 192.168.1.42
+    port: 80
+    timeout_seconds: 3
+    group: peripheral
+
+# === トポロジー (誰が誰を呼ぶか) ===
+# UI のトポロジー図で点線/実線を描くために使う
+edges:
+  - from: scan-worker
+    to: ollama-proxy
+    label: LLM 呼び出し
+  - from: n8n
+    to: ollama-proxy
+    label: LLM 呼び出し
+  - from: dify-api
+    to: ollama-proxy
+    label: LLM 呼び出し
+  - from: openclaw
+    to: ollama-proxy
+    label: LLM 呼び出し
+  - from: scan-worker
+    to: canon-printer
+    label: スキャン取得

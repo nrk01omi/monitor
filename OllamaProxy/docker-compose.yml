@@ -1,0 +1,42 @@
+services:
+  ollama-proxy:
+    build: .
+    container_name: ollama-proxy
+    restart: unless-stopped
+    ports:
+      # Host:Container. Change the host side if 11435/3005 are taken on the host.
+      - "11435:11435"
+      - "3005:3005"
+    volumes:
+      # Named volume avoids host UID/GID mismatch on Linux. Use
+      #   docker compose down  (data persists)
+      #   docker compose down -v  (data wiped)
+      - ollama-proxy-data:/app/data
+      # Docker socket — read-only is enough for the infra monitor's docker checker
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # One-time seed of monitor targets/edges from the legacy Python config.yaml.
+      # Safe to leave mounted: seedFromYaml is a no-op once the targets table has rows.
+      - ../config.yaml:/app/config/monitor.yaml:ro
+    environment:
+      # OLLAMA_HOST is consumed only on first boot to seed the upstreams table.
+      # After that, manage upstreams from the dashboard. host.docker.internal
+      # works on Docker Desktop (Win/Mac) out of the box.
+      OLLAMA_HOST: ${OLLAMA_HOST:-host.docker.internal:11434}
+      # Monitor poll cadence + retention. Override per environment if needed.
+      MONITOR_POLL_SECONDS: ${MONITOR_POLL_SECONDS:-10}
+      MONITOR_RETENTION_DAYS: ${MONITOR_RETENTION_DAYS:-7}
+    extra_hosts:
+      # Linux hosts need this to make host.docker.internal resolve.
+      - "host.docker.internal:host-gateway"
+    networks:
+      # Join the same external network as the monitored containers (n8n, scan-worker, etc.)
+      # so HTTP probes can resolve service names. Comment out if not on n8n stack.
+      - default
+      - n8n_default
+
+volumes:
+  ollama-proxy-data:
+
+networks:
+  n8n_default:
+    external: true

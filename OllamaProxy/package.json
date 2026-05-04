@@ -1,0 +1,16 @@
+{
+  "name": "ollama-proxy",
+  "version": "1.0.0",
+  "description": "Ollama request/response proxy with monitoring dashboard",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node --no-warnings=ExperimentalWarning src/server.js",
+    "dev": "node --no-warnings=ExperimentalWarning --watch src/server.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.9",
+    "dockerode": "^4.0.2",
+    "express": "^4.21.2",
+    "js-yaml": "^4.1.0"
+  }
+}

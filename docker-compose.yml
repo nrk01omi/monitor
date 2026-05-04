@@ -1,0 +1,39 @@
+# /volume2/docker/monitor/docker-compose.yml
+# Portainer Stack として登録すること
+# n8n_default ネットワークに参加 (n8n / scan-worker と同居)
+
+services:
+  monitor-api:
+    build: ./api
+    container_name: monitor-api
+    restart: unless-stopped
+    ports:
+      - "8765:8000"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./data:/app/data
+      # Docker socket: NAS 上の Docker コンテナ状態を直接読むため
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - TZ=Asia/Tokyo
+      - PYTHONUNBUFFERED=1
+    networks:
+      - n8n_default
+
+  monitor-web:
+    image: nginx:alpine
+    container_name: monitor-web
+    restart: unless-stopped
+    ports:
+      - "8766:80"
+    volumes:
+      - ./web:/usr/share/nginx/html:ro
+      - ./web/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - monitor-api
+    networks:
+      - n8n_default
+
+networks:
+  n8n_default:
+    external: true

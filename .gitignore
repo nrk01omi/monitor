@@ -1,0 +1,37 @@
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.idea/
+*.swp
+
+# Stray top-level lockfile (no package.json at this level)
+/package-lock.json
+
+# Runtime data — SQLite DBs, archive files, logs
+**/data/
+**/archive/
+**/*.log
+**/*.db
+**/*.db-shm
+**/*.db-wal
+
+# Secrets
+**/.env
+**/.env.local
+**/.env.*.local
+
+# Python (legacy api/, will be removed in cutover)
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+
+# Node — OllamaProxy has its own .gitignore for node_modules, but mirror it
+# at parent level so a future fresh clone doesn't accidentally commit them
+**/node_modules/
+
+# Temporary / scratch
+**/*.tmp
+**/node_modules-stub/

@@ -1,0 +1,1233 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ollama Proxy Monitor</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #0d1117;
+    --surface:   #161b22;
+    --surface2:  #21262d;
+    --border:    #30363d;
+    --text:      #e6edf3;
+    --text2:     #8b949e;
+    --accent:    #58a6ff;
+    --green:     #3fb950;
+    --red:       #f85149;
+    --orange:    #d29922;
+    --purple:    #bc8cff;
+    --radius:    6px;
+    --font:      'Segoe UI', system-ui, -apple-system, sans-serif;
+    --mono:      'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
+  }
+
+  html, body { height: 100%; font-family: var(--font); background: var(--bg); color: var(--text); font-size: 14px; }
+
+  /* ── Layout ── */
+  #app { display: flex; flex-direction: column; height: 100vh; }
+
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 20px;
+    display: flex; align-items: center; gap: 20px; flex-shrink: 0;
+  }
+  header h1 { font-size: 16px; font-weight: 600; color: var(--text); display: flex; align-items: center; gap: 8px; }
+  header h1 span.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); display: inline-block; animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+  .stat-bar { display: flex; gap: 20px; flex: 1; justify-content: flex-end; flex-wrap: wrap; }
+  .stat { display: flex; flex-direction: column; align-items: flex-end; }
+  .stat-val { font-size: 18px; font-weight: 700; line-height: 1; }
+  .stat-lbl { font-size: 11px; color: var(--text2); text-transform: uppercase; letter-spacing: .5px; }
+
+  /* ── Filter bar ── */
+  .filters {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 10px 20px;
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap; flex-shrink: 0;
+  }
+  .filters input, .filters select {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    padding: 6px 10px;
+    font-size: 13px;
+    outline: none;
+    transition: border-color .15s;
+  }
+  .filters input:focus, .filters select:focus { border-color: var(--accent); }
+  #search { flex: 1; min-width: 200px; }
+  .filters label { color: var(--text2); font-size: 12px; }
+  .btn {
+    padding: 6px 14px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    color: var(--text);
+    cursor: pointer;
+    font-size: 13px;
+    transition: background .15s, border-color .15s;
+  }
+  .btn:hover { background: var(--border); }
+  .btn.active { border-color: var(--accent); color: var(--accent); }
+
+  /* ── Main split ── */
+  .main { display: flex; flex: 1; overflow: hidden; }
+
+  /* ── Request list ── */
+  .list-panel {
+    width: 520px; min-width: 320px;
+    border-right: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    overflow: hidden; flex-shrink: 0;
+  }
+  .list-header {
+    padding: 8px 14px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 12px; color: var(--text2);
+  }
+  .request-list { flex: 1; overflow-y: auto; }
+  .request-list::-webkit-scrollbar { width: 6px; }
+  .request-list::-webkit-scrollbar-track { background: transparent; }
+  .request-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  .req-item {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    display: grid;
+    grid-template-columns: 44px 1fr auto;
+    grid-template-rows: auto auto;
+    gap: 2px 8px;
+    transition: background .1s;
+  }
+  .req-item:hover { background: var(--surface2); }
+  .req-item.selected { background: rgba(88,166,255,.08); border-left: 3px solid var(--accent); padding-left: 11px; }
+
+  .req-method {
+    grid-row: 1 / 3;
+    align-self: center;
+    font-size: 11px; font-weight: 700; letter-spacing: .3px;
+    padding: 2px 5px; border-radius: 3px; text-align: center;
+  }
+  .method-GET    { background: rgba(63,185,80,.15);  color: var(--green); }
+  .method-POST   { background: rgba(88,166,255,.15); color: var(--accent); }
+  .method-DELETE { background: rgba(248,81,73,.15);  color: var(--red); }
+  .method-PUT    { background: rgba(210,153,34,.15); color: var(--orange); }
+  .method-HEAD   { background: rgba(188,140,255,.15); color: var(--purple); }
+
+  .req-path { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .req-meta { font-size: 11px; color: var(--text2); display: flex; gap: 8px; }
+  .req-time { font-size: 11px; color: var(--text2); grid-row: 1; text-align: right; white-space: nowrap; }
+  .req-status { font-size: 11px; font-weight: 600; }
+  .status-2xx { color: var(--green); }
+  .status-4xx { color: var(--orange); }
+  .status-5xx { color: var(--red); }
+  .tag-model {
+    display: inline-flex; align-items: center;
+    background: rgba(188,140,255,.12); color: var(--purple);
+    padding: 1px 6px; border-radius: 10px; font-size: 11px;
+    max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .tag-stream { color: var(--orange); font-size: 11px; }
+  .tag-error  { color: var(--red); font-size: 11px; }
+  .tag-upstream {
+    display: inline-flex; align-items: center;
+    background: rgba(63,185,80,.12); color: var(--green);
+    padding: 1px 6px; border-radius: 10px; font-size: 11px;
+    max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-family: var(--mono);
+  }
+
+  /* ── Pagination ── */
+  .pagination {
+    padding: 8px 14px;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 12px; color: var(--text2); flex-shrink: 0;
+  }
+  .pagination button {
+    padding: 4px 10px;
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: var(--radius); color: var(--text);
+    cursor: pointer; font-size: 12px;
+  }
+  .pagination button:disabled { opacity: .4; cursor: default; }
+
+  /* ── Detail panel ── */
+  .detail-panel {
+    flex: 1; display: flex; flex-direction: column; overflow: hidden;
+  }
+  .detail-placeholder {
+    flex: 1; display: flex; align-items: center; justify-content: center;
+    color: var(--text2); font-size: 15px; flex-direction: column; gap: 12px;
+  }
+  .detail-placeholder svg { opacity: .2; }
+  .detail-content { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+  .detail-header {
+    padding: 12px 20px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: flex; gap: 12px; align-items: center; flex-wrap: wrap; flex-shrink: 0;
+  }
+  .detail-header .badge {
+    padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 600;
+  }
+  .detail-info { font-size: 12px; color: var(--text2); }
+  .detail-info strong { color: var(--text); }
+
+  .detail-tabs {
+    display: flex; gap: 0;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    flex-shrink: 0;
+  }
+  .tab-btn {
+    padding: 9px 18px; font-size: 13px; color: var(--text2);
+    background: none; border: none; cursor: pointer;
+    border-bottom: 2px solid transparent; margin-bottom: -1px;
+    transition: color .15s, border-color .15s;
+  }
+  .tab-btn:hover { color: var(--text); }
+  .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  .tab-content { flex: 1; overflow: auto; padding: 16px 20px; display: none; }
+  .tab-content.active { display: block; }
+  .tab-content::-webkit-scrollbar { width: 6px; }
+  .tab-content::-webkit-scrollbar-track { background: transparent; }
+  .tab-content::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  /* ── Code blocks ── */
+  pre {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-all;
+    color: var(--text);
+  }
+
+  .section-title {
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: .8px; color: var(--text2); margin-bottom: 8px;
+  }
+  .section { margin-bottom: 20px; }
+
+  /* ── Assembled text (chat view) ── */
+  .chat-bubble {
+    max-width: 720px;
+    margin-bottom: 12px;
+    padding: 10px 14px;
+    border-radius: var(--radius);
+    line-height: 1.6;
+    font-size: 13.5px;
+  }
+  .chat-user { background: rgba(88,166,255,.08); border: 1px solid rgba(88,166,255,.15); }
+  .chat-assistant { background: var(--surface); border: 1px solid var(--border); }
+  .chat-role { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; margin-bottom: 6px; color: var(--text2); }
+  .chat-bubble > div:last-child { white-space: pre-wrap; }
+
+  /* ── Loading spinner ── */
+  .spinner {
+    width: 32px; height: 32px;
+    border: 3px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin .7s linear infinite;
+    margin: 40px auto;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .empty-msg { color: var(--text2); text-align: center; padding: 40px 20px; }
+
+  /* ── Metrics bar ── */
+  .metrics-bar {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 7px 20px;
+    display: flex; gap: 20px; align-items: center;
+    flex-shrink: 0; overflow-x: auto;
+  }
+  .metrics-bar::-webkit-scrollbar { height: 0; }
+  .metric-item { display: flex; align-items: center; gap: 7px; white-space: nowrap; flex-shrink: 0; }
+  .metric-lbl { font-size: 10px; color: var(--text2); text-transform: uppercase; letter-spacing: .6px; width: 36px; }
+  .metric-val { font-size: 12px; font-weight: 600; min-width: 48px; }
+  .metric-gauge { width: 52px; height: 5px; background: var(--surface2); border-radius: 3px; overflow: hidden; flex-shrink: 0; }
+  .metric-gauge-fill { height: 100%; border-radius: 3px; transition: width .6s ease; }
+  .metric-divider { width: 1px; height: 20px; background: var(--border); flex-shrink: 0; }
+  .refresh-status {
+    margin-left: auto; display: flex; align-items: center; gap: 6px;
+    font-size: 11px; color: var(--text2); flex-shrink: 0;
+  }
+  .refresh-ring {
+    width: 14px; height: 14px; border: 2px solid var(--border);
+    border-top-color: var(--accent); border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .refresh-ring.spinning { animation: spin .7s linear infinite; }
+
+  /* ── Follow latest indicator ── */
+  .follow-btn {
+    font-size: 11px; padding: 2px 8px;
+    border-radius: 10px; border: 1px solid var(--border);
+    background: none; color: var(--text2); cursor: pointer;
+    transition: color .15s, border-color .15s;
+  }
+  .follow-btn.active { color: var(--green); border-color: var(--green); }
+
+  /* ── Settings drawer ── */
+  .gear-btn {
+    background: none; border: 1px solid var(--border); color: var(--text2);
+    width: 32px; height: 32px; border-radius: var(--radius); cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: color .15s, border-color .15s;
+  }
+  .gear-btn:hover { color: var(--accent); border-color: var(--accent); }
+
+  .drawer-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+    opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 50;
+  }
+  .drawer-backdrop.open { opacity: 1; pointer-events: auto; }
+
+  .drawer {
+    position: fixed; top: 0; right: 0; bottom: 0; width: 560px; max-width: 100vw;
+    background: var(--surface); border-left: 1px solid var(--border);
+    transform: translateX(100%); transition: transform .25s; z-index: 51;
+    display: flex; flex-direction: column;
+  }
+  .drawer.open { transform: translateX(0); }
+  .drawer-header {
+    padding: 14px 20px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+    flex-shrink: 0;
+  }
+  .drawer-header h2 { font-size: 15px; font-weight: 600; }
+  .drawer-body { flex: 1; overflow-y: auto; padding: 20px; }
+  .drawer-section { margin-bottom: 28px; }
+  .drawer-section h3 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: .5px;
+    color: var(--text2); margin-bottom: 10px;
+  }
+  .form-row { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+  .form-row label { font-size: 12px; color: var(--text2); }
+  .form-row input, .form-row select, .drawer textarea {
+    background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
+    color: var(--text); padding: 7px 10px; font-size: 13px; outline: none;
+    font-family: var(--font);
+  }
+  .form-row input:focus, .form-row select:focus, .drawer textarea:focus { border-color: var(--accent); }
+
+  .upstream-row {
+    background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 12px; margin-bottom: 10px;
+  }
+  .upstream-row .ur-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .upstream-row .ur-name { font-weight: 600; flex: 1; }
+  .upstream-row .ur-url { font-family: var(--mono); font-size: 12px; color: var(--text2); }
+  .upstream-row .ur-actions { display: flex; gap: 6px; }
+
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+  .badge.ok       { background: rgba(63,185,80,.15);  color: var(--green); }
+  .badge.error    { background: rgba(248,81,73,.15);  color: var(--red); }
+  .badge.unknown  { background: rgba(139,148,158,.15); color: var(--text2); }
+  .badge.default  { background: rgba(88,166,255,.15); color: var(--accent); }
+
+  .drawer .btn-primary {
+    background: var(--accent); border-color: var(--accent); color: #0d1117; font-weight: 600;
+  }
+  .drawer .btn-primary:hover { background: #79b8ff; }
+  .drawer .btn-danger { color: var(--red); border-color: rgba(248,81,73,.4); }
+  .drawer .btn-danger:hover { background: rgba(248,81,73,.15); }
+
+  .restart-overlay {
+    position: fixed; inset: 0; background: rgba(13,17,23,0.92);
+    display: none; align-items: center; justify-content: center; z-index: 100;
+    flex-direction: column; gap: 16px;
+  }
+  .restart-overlay.show { display: flex; }
+  .restart-overlay .spinner {
+    width: 36px; height: 36px; border: 3px solid var(--border);
+    border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <div id="top-nav"></div>
+
+  <!-- Header -->
+  <header>
+    <h1><span class="dot"></span> Ollama Proxy Monitor</h1>
+    <div class="stat-bar" id="statBar">
+      <div class="stat"><span class="stat-val" id="statTotal">–</span><span class="stat-lbl">Total</span></div>
+      <div class="stat"><span class="stat-val" id="stat24h">–</span><span class="stat-lbl">24h</span></div>
+      <div class="stat"><span class="stat-val" id="stat1h">–</span><span class="stat-lbl">1h</span></div>
+      <div class="stat"><span class="stat-val" id="statAvg">–</span><span class="stat-lbl">Avg ms</span></div>
+      <div class="stat"><span class="stat-val" id="statErrors" style="color:var(--red)">–</span><span class="stat-lbl">Errors</span></div>
+    </div>
+    <button class="gear-btn" id="btnSettings" title="Settings">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+      </svg>
+    </button>
+  </header>
+
+  <!-- Metrics bar -->
+  <div class="metrics-bar" id="metricsBar">
+    <div class="metric-item">
+      <span class="metric-lbl">CPU</span>
+      <div class="metric-gauge"><div class="metric-gauge-fill" id="mCpuBar" style="background:var(--accent);width:0%"></div></div>
+      <span class="metric-val" id="mCpu">–</span>
+    </div>
+    <div class="metric-divider"></div>
+    <div class="metric-item">
+      <span class="metric-lbl">Mem</span>
+      <div class="metric-gauge"><div class="metric-gauge-fill" id="mMemBar" style="background:var(--purple);width:0%"></div></div>
+      <span class="metric-val" id="mMem">–</span>
+    </div>
+    <div class="metric-divider"></div>
+    <div class="metric-item">
+      <span class="metric-lbl">Load</span>
+      <span class="metric-val" id="mLoad">–</span>
+    </div>
+    <div class="metric-divider"></div>
+    <div class="metric-item" id="mTempItem" style="display:none">
+      <span class="metric-lbl">Temp</span>
+      <div class="metric-gauge"><div class="metric-gauge-fill" id="mTempBar" style="background:var(--orange);width:0%"></div></div>
+      <span class="metric-val" id="mTemp">–</span>
+    </div>
+    <div class="refresh-status">
+      <div class="refresh-ring" id="refreshRing"></div>
+      <span id="refreshCountdown">–</span>
+    </div>
+  </div>
+
+  <!-- Filters -->
+  <div class="filters">
+    <input type="search" id="search" placeholder="Search in request / response bodies..." autocomplete="off">
+    <select id="filterModel"><option value="">All models</option></select>
+    <input type="text" id="filterPath" placeholder="Path filter" style="width:140px">
+    <label>From <input type="datetime-local" id="filterFrom" style="width:170px"></label>
+    <label>To   <input type="datetime-local" id="filterTo"   style="width:170px"></label>
+    <button class="btn" id="btnRefresh">⟳ Refresh</button>
+    <button class="btn" id="btnClearFilters">✕ Clear</button>
+  </div>
+
+  <!-- Main -->
+  <div class="main">
+
+    <!-- List panel -->
+    <div class="list-panel">
+      <div class="list-header">
+        <span id="listCount">Loading…</span>
+        <button class="follow-btn active" id="btnFollow" title="最新を自動表示">▼ Following</button>
+      </div>
+      <div class="request-list" id="requestList"></div>
+      <div class="pagination" id="pagination">
+        <button id="btnPrev" disabled>← Prev</button>
+        <span id="pageDisplay"></span>
+        <button id="btnNext" disabled>Next →</button>
+      </div>
+    </div>
+
+    <!-- Detail panel -->
+    <div class="detail-panel" id="detailPanel">
+      <div class="detail-placeholder">
+        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+          <line x1="9" y1="13" x2="15" y2="13"/>
+          <line x1="9" y1="17" x2="12" y2="17"/>
+        </svg>
+        <span>Select a request to view details</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Settings drawer -->
+<div class="drawer-backdrop" id="drawerBackdrop"></div>
+<div class="drawer" id="drawer" role="dialog" aria-label="Settings">
+  <div class="drawer-header">
+    <h2>Settings</h2>
+    <button class="btn" id="btnDrawerClose">✕</button>
+  </div>
+  <div class="drawer-body">
+
+    <div class="drawer-section">
+      <h3>Listen ports</h3>
+      <div class="form-row">
+        <label>Proxy port (clients connect here)</label>
+        <input type="number" id="setProxyPort" min="1" max="65535">
+      </div>
+      <div class="form-row">
+        <label>Dashboard port (this UI)</label>
+        <input type="number" id="setDashboardPort" min="1" max="65535">
+      </div>
+      <div style="font-size:12px; color: var(--text2); margin-bottom: 10px;">
+        Port changes require a restart. Save below, then click <em>Restart server</em>.
+      </div>
+    </div>
+
+    <div class="drawer-section">
+      <h3>Health check</h3>
+      <div class="form-row">
+        <label>Polling interval (seconds, min 5)</label>
+        <input type="number" id="setHealthInterval" min="5" max="3600">
+      </div>
+      <button class="btn btn-primary" id="btnSaveSettings">Save settings</button>
+      <button class="btn" id="btnRestart" style="margin-left: 8px;">↻ Restart server</button>
+    </div>
+
+    <div class="drawer-section">
+      <h3 style="display:flex; align-items:center; justify-content:space-between;">
+        <span>Upstreams</span>
+        <button class="btn btn-primary" id="btnAddUpstream" style="font-size:12px; padding:4px 10px;">+ Add upstream</button>
+      </h3>
+      <div id="upstreamList"></div>
+    </div>
+
+  </div>
+</div>
+
+<!-- Restart overlay -->
+<div class="restart-overlay" id="restartOverlay">
+  <div class="spinner"></div>
+  <div id="restartText" style="font-size:14px;">Restarting…</div>
+  <div id="restartHint" style="font-size:12px; color: var(--text2);"></div>
+</div>
+
+<script src="/nav.js"></script>
+<script>
+(function() {
+  'use strict';
+
+  // ── State ──
+  const REQUESTS_INTERVAL = 30;  // seconds
+  const METRICS_INTERVAL  = 10;  // seconds
+
+  let state = {
+    page: 1,
+    limit: 50,
+    total: 0,
+    pages: 0,
+    search: '',
+    model: '',
+    path: '',
+    dateFrom: '',
+    dateTo: '',
+    selectedId: null,
+    latestId: null,      // newest request id seen
+    followLatest: true,  // auto-open newest request
+    rows: [],
+    // countdown
+    requestsCountdown: REQUESTS_INTERVAL,
+    metricsCountdown:  METRICS_INTERVAL,
+  };
+
+  // ── DOM refs ──
+  const $ = (id) => document.getElementById(id);
+  const requestList  = $('requestList');
+  const detailPanel  = $('detailPanel');
+  const listCount    = $('listCount');
+  const pageDisplay  = $('pageDisplay');
+  const btnPrev      = $('btnPrev');
+  const btnNext      = $('btnNext');
+  const btnFollow    = $('btnFollow');
+
+  // ── Fetch helpers ──
+  async function fetchJSON(url) {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  }
+
+  // ── Stats ──
+  async function loadStats() {
+    try {
+      const s = await fetchJSON('/api/stats');
+      $('statTotal').textContent  = s.total.toLocaleString();
+      $('stat24h').textContent    = s.last24h.toLocaleString();
+      $('stat1h').textContent     = s.last1h.toLocaleString();
+      $('statAvg').textContent    = s.avgDuration.toLocaleString();
+      $('statErrors').textContent = s.errors.toLocaleString();
+    } catch {}
+  }
+
+  // ── System metrics ──
+  async function loadMetrics() {
+    try {
+      const m = await fetchJSON('/api/metrics/current');
+      if (!m || !m.timestamp) return;
+
+      const cpuPct = m.cpu_pct ?? 0;
+      $('mCpu').textContent = cpuPct.toFixed(1) + '%';
+      $('mCpuBar').style.width = Math.min(cpuPct, 100) + '%';
+      $('mCpuBar').style.background = cpuPct > 80 ? 'var(--red)' : cpuPct > 60 ? 'var(--orange)' : 'var(--accent)';
+
+      if (m.mem_total) {
+        const pct = (m.mem_used / m.mem_total) * 100;
+        const gb = (m.mem_used / 1073741824).toFixed(1);
+        const tot = (m.mem_total / 1073741824).toFixed(0);
+        $('mMem').textContent = `${gb}/${tot}G`;
+        $('mMemBar').style.width = Math.min(pct, 100) + '%';
+        $('mMemBar').style.background = pct > 85 ? 'var(--red)' : 'var(--purple)';
+      }
+
+      if (m.load_1 != null) {
+        $('mLoad').textContent = `${m.load_1} / ${m.load_5} / ${m.load_15}`;
+      }
+
+      if (m.cpu_temp != null) {
+        $('mTempItem').style.display = 'flex';
+        $('mTemp').textContent = m.cpu_temp.toFixed(1) + '°C';
+        const tpct = Math.min(((m.cpu_temp - 30) / 70) * 100, 100);
+        $('mTempBar').style.width = tpct + '%';
+        $('mTempBar').style.background = m.cpu_temp > 90 ? 'var(--red)' : m.cpu_temp > 70 ? 'var(--orange)' : 'var(--green)';
+      }
+    } catch {}
+  }
+
+  // ── Models dropdown ──
+  async function loadModels() {
+    try {
+      const models = await fetchJSON('/api/models');
+      const sel = $('filterModel');
+      // preserve current value
+      const cur = sel.value;
+      sel.innerHTML = '<option value="">All models</option>';
+      models.forEach(m => {
+        const o = document.createElement('option');
+        o.value = m; o.textContent = m;
+        if (m === cur) o.selected = true;
+        sel.appendChild(o);
+      });
+    } catch {}
+  }
+
+  // ── Request list ──
+  async function loadRequests() {
+    const params = new URLSearchParams({
+      page:  state.page,
+      limit: state.limit,
+    });
+    if (state.search)   params.set('search',   state.search);
+    if (state.model)    params.set('model',     state.model);
+    if (state.path)     params.set('path',      state.path);
+    if (state.dateFrom) params.set('dateFrom',  state.dateFrom);
+    if (state.dateTo)   params.set('dateTo',    state.dateTo);
+
+    requestList.innerHTML = '<div class="spinner"></div>';
+    listCount.textContent = '…';
+
+    try {
+      const data = await fetchJSON('/api/requests?' + params);
+      state.rows  = data.rows;
+      state.total = data.total;
+      state.pages = data.pages;
+
+      listCount.textContent = `${data.total.toLocaleString()} requests`;
+      pageDisplay.textContent = `${state.page} / ${state.pages || 1}`;
+      btnPrev.disabled = state.page <= 1;
+      btnNext.disabled = state.page >= state.pages;
+
+      renderList(data.rows);
+
+      // Follow latest: 新しいリクエストが来た & followLatest が ON & ページ1のとき
+      if (state.followLatest && state.page === 1 && data.rows.length > 0) {
+        const newestId = data.rows[0].id;
+        if (newestId !== state.latestId) {
+          state.latestId = newestId;
+          state.selectedId = newestId;
+          // DOM の選択状態を更新してから詳細を開く
+          requestList.querySelectorAll('.req-item').forEach(x =>
+            x.classList.toggle('selected', parseInt(x.dataset.id, 10) === newestId)
+          );
+          loadDetail(newestId);
+        }
+      }
+    } catch (err) {
+      requestList.innerHTML = `<div class="empty-msg">Error loading: ${err.message}</div>`;
+    }
+  }
+
+  function renderList(rows) {
+    if (!rows.length) {
+      requestList.innerHTML = '<div class="empty-msg">No requests found</div>';
+      return;
+    }
+
+    requestList.innerHTML = rows.map(r => {
+      const selected = r.id === state.selectedId ? ' selected' : '';
+      const statusClass = r.response_status
+        ? (r.response_status < 300 ? 'status-2xx' : r.response_status < 500 ? 'status-4xx' : 'status-5xx')
+        : '';
+      const timeStr = formatTime(r.timestamp);
+      const methodClass = `method-${r.method}`;
+      const durStr = r.duration_ms != null ? `${r.duration_ms}ms` : '–';
+
+      return `
+        <div class="req-item${selected}" data-id="${r.id}">
+          <span class="req-method ${methodClass}">${escHtml(r.method)}</span>
+          <span class="req-path">${escHtml(r.path)}</span>
+          <span class="req-time">${timeStr}</span>
+          <span class="req-meta">
+            ${r.response_status ? `<span class="req-status ${statusClass}">${r.response_status}</span>` : ''}
+            ${r.upstream_name ? `<span class="tag-upstream" title="upstream">→ ${escHtml(r.upstream_name)}</span>` : ''}
+            ${r.model ? `<span class="tag-model">${escHtml(r.model)}</span>` : ''}
+            ${r.is_streaming ? `<span class="tag-stream">~stream</span>` : ''}
+            ${r.error ? `<span class="tag-error">error</span>` : ''}
+            <span>${durStr}</span>
+          </span>
+        </div>`;
+    }).join('');
+
+    // Click handler
+    requestList.querySelectorAll('.req-item').forEach(el => {
+      el.addEventListener('click', () => {
+        const clickedId = parseInt(el.dataset.id, 10);
+        // 最新と異なるアイテムを選んだら follow を解除
+        if (clickedId !== state.latestId) {
+          state.followLatest = false;
+          btnFollow.classList.remove('active');
+          btnFollow.textContent = '▶ Resume';
+        }
+        state.selectedId = clickedId;
+        requestList.querySelectorAll('.req-item').forEach(x => x.classList.remove('selected'));
+        el.classList.add('selected');
+        loadDetail(state.selectedId);
+      });
+    });
+  }
+
+  // ── Detail ──
+  let activeTab = 'chat';
+
+  async function loadDetail(id) {
+    detailPanel.innerHTML = '<div class="spinner"></div>';
+    try {
+      const r = await fetchJSON(`/api/requests/${id}`);
+      renderDetail(r);
+    } catch (err) {
+      detailPanel.innerHTML = `<div class="detail-placeholder"><span>Error: ${err.message}</span></div>`;
+    }
+  }
+
+  function renderDetail(r) {
+    const statusClass = r.response_status
+      ? (r.response_status < 300 ? 'status-2xx' : r.response_status < 500 ? 'status-4xx' : 'status-5xx')
+      : '';
+
+    // Parse bodies
+    let reqParsed = null, resParsed = null;
+    try { reqParsed = JSON.parse(r.request_body); } catch {}
+
+    // Assemble chat messages
+    const chatBlocks = buildChatView(reqParsed, r.response_body, r.is_streaming);
+
+    // Headers pretty
+    let reqHeaders = '{}', resHeaders = '{}';
+    try { reqHeaders = JSON.stringify(JSON.parse(r.request_headers), null, 2); } catch {}
+    try { resHeaders = JSON.stringify(JSON.parse(r.response_headers), null, 2); } catch {}
+
+    // Pretty request body
+    const reqBodyStr = reqParsed ? JSON.stringify(reqParsed, null, 2) : (r.request_body || '(empty)');
+
+    // Pretty response body
+    const resBodyStr = buildPrettyResponse(r.response_body, r.is_streaming);
+
+    detailPanel.innerHTML = `
+      <div class="detail-content">
+        <div class="detail-header">
+          <span class="req-method badge method-${r.method}">${escHtml(r.method)}</span>
+          <strong style="font-size:14px">${escHtml(r.path)}</strong>
+          ${r.response_status ? `<span class="req-status ${statusClass}" style="font-size:14px">${r.response_status}</span>` : ''}
+          <span class="detail-info"><strong>${r.model || '–'}</strong></span>
+          ${r.upstream_name ? `<span class="tag-upstream">→ ${escHtml(r.upstream_name)}</span>` : ''}
+          <span class="detail-info">${r.duration_ms != null ? `${r.duration_ms} ms` : '–'}</span>
+          <span class="detail-info">${formatTimeFull(r.timestamp)}</span>
+          ${r.error ? `<span class="tag-error">⚠ ${escHtml(r.error)}</span>` : ''}
+        </div>
+        <div class="detail-tabs">
+          <button class="tab-btn ${activeTab==='chat'?'active':''}"     data-tab="chat">Chat View</button>
+          <button class="tab-btn ${activeTab==='request'?'active':''}"  data-tab="request">Request Body</button>
+          <button class="tab-btn ${activeTab==='response'?'active':''}" data-tab="response">Response Raw</button>
+          <button class="tab-btn ${activeTab==='headers'?'active':''}"  data-tab="headers">Headers</button>
+        </div>
+        <div id="tab-chat"     class="tab-content ${activeTab==='chat'?'active':''}">
+          ${chatBlocks || '<div class="empty-msg">No chat messages found</div>'}
+        </div>
+        <div id="tab-request"  class="tab-content ${activeTab==='request'?'active':''}">
+          <pre>${escHtml(reqBodyStr)}</pre>
+        </div>
+        <div id="tab-response" class="tab-content ${activeTab==='response'?'active':''}">
+          <pre>${escHtml(resBodyStr)}</pre>
+        </div>
+        <div id="tab-headers"  class="tab-content ${activeTab==='headers'?'active':''}">
+          <div class="section">
+            <div class="section-title">Request Headers</div>
+            <pre>${escHtml(reqHeaders)}</pre>
+          </div>
+          <div class="section">
+            <div class="section-title">Response Headers</div>
+            <pre>${escHtml(resHeaders)}</pre>
+          </div>
+        </div>
+      </div>`;
+
+    detailPanel.querySelectorAll('.tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        activeTab = btn.dataset.tab;
+        detailPanel.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        detailPanel.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+        btn.classList.add('active');
+        document.getElementById(`tab-${activeTab}`).classList.add('active');
+      });
+    });
+  }
+
+  // ── Chat View builder ──
+  function buildChatView(reqParsed, responseBody, isStreaming) {
+    const parts = [];
+
+    // Request messages (chat API)
+    if (reqParsed?.messages && Array.isArray(reqParsed.messages)) {
+      for (const msg of reqParsed.messages) {
+        const role = msg.role || 'unknown';
+        const content = typeof msg.content === 'string' ? msg.content
+          : Array.isArray(msg.content) ? msg.content.map(c => c.text || c.content || '').join('') : '';
+        parts.push(`<div class="chat-bubble chat-${role==='user'?'user':'assistant'}">
+          <div class="chat-role">${escHtml(role)}</div>
+          <div>${escHtml(content)}</div>
+        </div>`);
+      }
+    } else if (reqParsed?.prompt) {
+      // Generate API
+      parts.push(`<div class="chat-bubble chat-user">
+        <div class="chat-role">prompt</div>
+        <div>${escHtml(reqParsed.prompt)}</div>
+      </div>`);
+    }
+
+    if (!responseBody) return parts.join('') || null;
+
+    // Parse response
+    let assembled = '';
+    const lines = responseBody.trim().split('\n').filter(Boolean);
+
+    for (const line of lines) {
+      try {
+        const obj = JSON.parse(line);
+        // /api/chat
+        if (obj.message?.content) assembled += obj.message.content;
+        // /api/generate
+        if (typeof obj.response === 'string') assembled += obj.response;
+      } catch {
+        // single JSON (non-streaming)
+        try {
+          const obj = JSON.parse(responseBody);
+          if (obj.message?.content)         assembled = obj.message.content;
+          else if (typeof obj.response === 'string') assembled = obj.response;
+          break;
+        } catch {}
+        break;
+      }
+    }
+
+    if (assembled) {
+      parts.push(`<div class="chat-bubble chat-assistant">
+        <div class="chat-role">assistant</div>
+        <div>${escHtml(assembled)}</div>
+      </div>`);
+    }
+
+    return parts.join('') || null;
+  }
+
+  function buildPrettyResponse(body, isStreaming) {
+    if (!body) return '(empty)';
+    if (!isStreaming) {
+      try { return JSON.stringify(JSON.parse(body), null, 2); } catch {}
+      return body;
+    }
+    // NDJSON — try to pretty each line
+    return body.trim().split('\n').map(line => {
+      try { return JSON.stringify(JSON.parse(line), null, 2); }
+      catch { return line; }
+    }).join('\n\n');
+  }
+
+  // ── Utilities ──
+  function escHtml(s) {
+    if (s == null) return '';
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function formatTime(ts) {
+    if (!ts) return '–';
+    const d = new Date(ts);
+    const now = new Date();
+    const diffMs = now - d;
+    if (diffMs < 60_000)      return `${Math.floor(diffMs/1000)}s ago`;
+    if (diffMs < 3_600_000)   return `${Math.floor(diffMs/60000)}m ago`;
+    if (diffMs < 86_400_000)  return `${Math.floor(diffMs/3600000)}h ago`;
+    return d.toLocaleDateString();
+  }
+
+  function formatTimeFull(ts) {
+    if (!ts) return '–';
+    return new Date(ts).toLocaleString();
+  }
+
+  // ── Event bindings ──
+  let searchTimer;
+  $('search').addEventListener('input', e => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      state.search = e.target.value;
+      state.page = 1;
+      loadRequests();
+    }, 400);
+  });
+
+  $('filterModel').addEventListener('change', e => {
+    state.model = e.target.value;
+    state.page = 1;
+    loadRequests();
+  });
+
+  $('filterPath').addEventListener('input', e => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      state.path = e.target.value;
+      state.page = 1;
+      loadRequests();
+    }, 400);
+  });
+
+  $('filterFrom').addEventListener('change', e => {
+    state.dateFrom = e.target.value ? e.target.value + ':00' : '';
+    state.page = 1;
+    loadRequests();
+  });
+
+  $('filterTo').addEventListener('change', e => {
+    state.dateTo = e.target.value ? e.target.value + ':59' : '';
+    state.page = 1;
+    loadRequests();
+  });
+
+  $('btnRefresh').addEventListener('click', () => {
+    state.requestsCountdown = 0; // 即時発火させる
+    loadStats();
+    loadModels();
+    loadRequests();
+  });
+
+  $('btnClearFilters').addEventListener('click', () => {
+    $('search').value = '';
+    $('filterModel').value = '';
+    $('filterPath').value = '';
+    $('filterFrom').value = '';
+    $('filterTo').value = '';
+    state.search = ''; state.model = ''; state.path = '';
+    state.dateFrom = ''; state.dateTo = '';
+    state.page = 1;
+    loadRequests();
+  });
+
+  btnPrev.addEventListener('click', () => { state.page--; loadRequests(); });
+  btnNext.addEventListener('click', () => { state.page++; loadRequests(); });
+
+  // "Follow latest" ボタン
+  btnFollow.addEventListener('click', () => {
+    state.followLatest = true;
+    state.latestId = null; // 強制的に最新を開かせる
+    btnFollow.classList.add('active');
+    btnFollow.textContent = '▼ Following';
+    state.page = 1;
+    loadRequests();
+  });
+
+  // ── Always-on auto-refresh (1s tick) ──
+  setInterval(() => {
+    state.requestsCountdown--;
+    state.metricsCountdown--;
+
+    if (state.metricsCountdown <= 0) {
+      state.metricsCountdown = METRICS_INTERVAL;
+      loadMetrics();
+    }
+
+    if (state.requestsCountdown <= 0) {
+      state.requestsCountdown = REQUESTS_INTERVAL;
+      const ring = $('refreshRing');
+      ring.classList.add('spinning');
+      Promise.all([loadStats(), loadModels(), loadRequests()])
+        .finally(() => ring.classList.remove('spinning'));
+    }
+
+    // カウントダウン表示: 次の更新まで X 秒
+    const next = Math.min(state.requestsCountdown, state.metricsCountdown);
+    $('refreshCountdown').textContent = `next ${next}s`;
+  }, 1000);
+
+  // ──────────────────────────────────────────────────────────────────────
+  // Settings drawer
+  // ──────────────────────────────────────────────────────────────────────
+
+  const drawer         = $('drawer');
+  const drawerBackdrop = $('drawerBackdrop');
+  const upstreamList   = $('upstreamList');
+
+  function openDrawer() {
+    drawer.classList.add('open');
+    drawerBackdrop.classList.add('open');
+    refreshSettings();
+    refreshUpstreams();
+  }
+  function closeDrawer() {
+    drawer.classList.remove('open');
+    drawerBackdrop.classList.remove('open');
+  }
+  $('btnSettings').addEventListener('click', openDrawer);
+  $('btnDrawerClose').addEventListener('click', closeDrawer);
+  drawerBackdrop.addEventListener('click', closeDrawer);
+
+  async function refreshSettings() {
+    try {
+      const s = await fetchJSON('/api/settings');
+      $('setProxyPort').value      = s.proxy_port;
+      $('setDashboardPort').value  = s.dashboard_port;
+      $('setHealthInterval').value = s.health_interval_seconds;
+    } catch (e) {
+      alert('Failed to load settings: ' + e.message);
+    }
+  }
+
+  async function refreshUpstreams() {
+    try {
+      const list = await fetchJSON('/api/upstreams');
+      upstreamList.innerHTML = '';
+      if (list.length === 0) {
+        upstreamList.innerHTML = '<div style="color:var(--text2); font-size:13px;">No upstreams. Add one below.</div>';
+        return;
+      }
+      for (const u of list) {
+        upstreamList.appendChild(renderUpstream(u));
+      }
+    } catch (e) {
+      upstreamList.innerHTML = `<div style="color:var(--red); font-size:13px;">${e.message}</div>`;
+    }
+  }
+
+  function escapeHtml(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c => ({
+      '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+    }[c]));
+  }
+
+  function renderUpstream(u) {
+    const wrap = document.createElement('div');
+    wrap.className = 'upstream-row';
+    let patterns = '[]';
+    try { patterns = JSON.parse(u.model_patterns).join(', '); } catch {}
+
+    const status = (u.status || 'unknown').toLowerCase();
+    const badgeClass = ['ok','error','unknown'].includes(status) ? status : 'unknown';
+    const lastErr = u.last_error ? `title="${escapeHtml(u.last_error)}"` : '';
+    const latency = u.latency_ms != null ? ` (${u.latency_ms}ms)` : '';
+
+    const protocol = u.protocol || 'ollama';
+
+    wrap.innerHTML = `
+      <div class="ur-head">
+        <span class="ur-name">${escapeHtml(u.name)}</span>
+        <span class="badge unknown" title="protocol">${escapeHtml(protocol)}</span>
+        ${u.is_default ? '<span class="badge default">default</span>' : ''}
+        <span class="badge ${badgeClass}" ${lastErr}>${status}${latency}</span>
+        <div class="ur-actions">
+          <button class="btn" data-act="check">Check</button>
+          <button class="btn" data-act="edit">Edit</button>
+          <button class="btn btn-danger" data-act="delete">Delete</button>
+        </div>
+      </div>
+      <div class="ur-url">${escapeHtml(u.url)}</div>
+      <div style="font-size:12px; color:var(--text2); margin-top:4px;">
+        patterns: <code>${escapeHtml(patterns)}</code> · priority: ${u.priority} · ${u.enabled ? 'enabled' : 'disabled'}
+      </div>
+    `;
+
+    wrap.querySelector('[data-act=check]').addEventListener('click', async () => {
+      try {
+        await fetch(`/api/upstreams/${u.id}/check`, { method: 'POST' });
+        refreshUpstreams();
+      } catch (e) { alert(e.message); }
+    });
+    wrap.querySelector('[data-act=edit]').addEventListener('click', () => editUpstream(u));
+    wrap.querySelector('[data-act=delete]').addEventListener('click', () => deleteUpstream(u));
+    return wrap;
+  }
+
+  function promptUpstream(initial = {}) {
+    const name = prompt('Name:', initial.name ?? '');
+    if (name === null) return null;
+    const url = prompt('URL (e.g. http://host:11434 for Ollama, http://host:1234 for LM Studio):', initial.url ?? 'http://localhost:11434');
+    if (url === null) return null;
+    const protocol = prompt('Protocol (ollama | openai):\nollama → /api/tags, /api/chat\nopenai → /v1/models, /v1/chat/completions  (LM Studio, vLLM, etc.)', initial.protocol ?? 'ollama');
+    if (protocol === null) return null;
+    if (!['ollama', 'openai'].includes(protocol.trim())) {
+      alert('Protocol must be "ollama" or "openai"');
+      return null;
+    }
+    let patternsStr;
+    try {
+      const init = initial.model_patterns ? JSON.parse(initial.model_patterns).join(', ') : '*';
+      patternsStr = prompt('Model patterns (comma-separated globs, e.g. "qwen3.6:*, llama3:*"):', init);
+    } catch {
+      patternsStr = prompt('Model patterns (comma-separated globs):', '*');
+    }
+    if (patternsStr === null) return null;
+    const priorityStr = prompt('Priority (higher wins on tie):', String(initial.priority ?? 0));
+    if (priorityStr === null) return null;
+    const isDefaultStr = prompt('Mark as default (fallback)? y/n:', initial.is_default ? 'y' : 'n');
+    if (isDefaultStr === null) return null;
+    return {
+      name: name.trim(),
+      url: url.trim(),
+      protocol: protocol.trim(),
+      model_patterns: patternsStr.split(',').map(s => s.trim()).filter(Boolean),
+      priority: parseInt(priorityStr, 10) || 0,
+      is_default: isDefaultStr.trim().toLowerCase().startsWith('y'),
+      enabled: true,
+    };
+  }
+
+  async function addUpstream() {
+    const data = promptUpstream();
+    if (!data) return;
+    try {
+      const r = await fetch('/api/upstreams', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+      if (!r.ok) throw new Error((await r.json()).error || `HTTP ${r.status}`);
+      refreshUpstreams();
+    } catch (e) { alert('Add failed: ' + e.message); }
+  }
+
+  async function editUpstream(u) {
+    const data = promptUpstream(u);
+    if (!data) return;
+    try {
+      const r = await fetch(`/api/upstreams/${u.id}`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+      if (!r.ok) throw new Error((await r.json()).error || `HTTP ${r.status}`);
+      refreshUpstreams();
+    } catch (e) { alert('Update failed: ' + e.message); }
+  }
+
+  async function deleteUpstream(u) {
+    if (!confirm(`Delete upstream "${u.name}"?`)) return;
+    try {
+      const r = await fetch(`/api/upstreams/${u.id}`, { method: 'DELETE' });
+      if (!r.ok) throw new Error((await r.json()).error || `HTTP ${r.status}`);
+      refreshUpstreams();
+    } catch (e) { alert('Delete failed: ' + e.message); }
+  }
+
+  $('btnAddUpstream').addEventListener('click', addUpstream);
+
+  $('btnSaveSettings').addEventListener('click', async () => {
+    const proxy_port            = parseInt($('setProxyPort').value, 10);
+    const dashboard_port        = parseInt($('setDashboardPort').value, 10);
+    const health_interval_seconds = parseInt($('setHealthInterval').value, 10);
+    try {
+      const r = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ proxy_port, dashboard_port, health_interval_seconds }),
+      });
+      const result = await r.json();
+      if (!r.ok) throw new Error(result.error || `HTTP ${r.status}`);
+      if (result.needsRestart) {
+        if (confirm('Port changed. Restart server now to apply?')) {
+          triggerRestart(dashboard_port);
+        }
+      } else {
+        alert('Saved.');
+      }
+    } catch (e) { alert('Save failed: ' + e.message); }
+  });
+
+  $('btnRestart').addEventListener('click', () => {
+    if (!confirm('Restart the server now?')) return;
+    triggerRestart(parseInt($('setDashboardPort').value, 10));
+  });
+
+  // After requesting /api/restart, the dashboard process exits and the
+  // supervisor (Docker / pm2) brings it back. Poll the new dashboard URL
+  // until /api/stats responds, then redirect the browser.
+  async function triggerRestart(newDashboardPort) {
+    try { await fetch('/api/restart', { method: 'POST' }); } catch {}
+    const overlay = $('restartOverlay');
+    const text    = $('restartText');
+    const hint    = $('restartHint');
+    overlay.classList.add('show');
+    text.textContent = 'Restarting…';
+
+    const newUrl = `${location.protocol}//${location.hostname}:${newDashboardPort || location.port}`;
+    let attempt = 0;
+    const maxAttempts = 30; // 30 * 1s = 30s
+    const poll = async () => {
+      attempt++;
+      hint.textContent = `Reconnecting to ${newUrl} (${attempt}/${maxAttempts})…`;
+      try {
+        const r = await fetch(`${newUrl}/api/stats`, { cache: 'no-store' });
+        if (r.ok) {
+          text.textContent = 'Reconnected. Redirecting…';
+          setTimeout(() => { window.location.href = newUrl; }, 500);
+          return;
+        }
+      } catch {}
+      if (attempt >= maxAttempts) {
+        text.textContent = 'Restart failed';
+        hint.textContent = 'Check server logs and refresh manually.';
+        return;
+      }
+      setTimeout(poll, 1000);
+    };
+    setTimeout(poll, 2000); // wait for the supervisor to bring the process back
+  }
+
+  // ── Init ──
+  loadStats();
+  loadModels();
+  loadRequests();
+  loadMetrics();
+})();
+</script>
+</body>
+</html>
