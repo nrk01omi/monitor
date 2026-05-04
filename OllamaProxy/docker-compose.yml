@@ -22,7 +22,10 @@ services:
       MONITOR_RETENTION_DAYS: ${MONITOR_RETENTION_DAYS:-7}
       # Portainer API — used by the docker checker instead of /var/run/docker.sock.
       # Create an access token in Portainer (My account → Access tokens) and put it in .env.
-      PORTAINER_URL: ${PORTAINER_URL:-http://portainer:9000}
+      # Portainer is on Docker's default bridge (172.17.0.0/16); we join it via
+      # the portainer_bridge network below and address Portainer by its bridge IP
+      # because container-to-host-port (publish loopback) is RST-blocked here.
+      PORTAINER_URL: ${PORTAINER_URL:-http://172.17.0.2:9000}
       PORTAINER_ENDPOINT_ID: ${PORTAINER_ENDPOINT_ID:-3}
       PORTAINER_API_KEY: ${PORTAINER_API_KEY:-}
     extra_hosts:
@@ -33,6 +36,9 @@ services:
       # so HTTP probes can resolve service names. Comment out if not on n8n stack.
       - default
       - n8n_default
+      # Default Docker bridge — Portainer lives here, so this lets us reach it
+      # at 172.17.0.2:9000 directly.
+      - portainer_bridge
 
 volumes:
   ollama-proxy-data:
@@ -40,3 +46,6 @@ volumes:
 networks:
   n8n_default:
     external: true
+  portainer_bridge:
+    external: true
+    name: bridge

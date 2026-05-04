@@ -112,7 +112,7 @@ npm start
 `PORTAINER_ENDPOINT_ID` が違う (Portainer 画面 URL の `/endpoints/{id}/` で確認)、または `monitor_targets.config.container_name` が実コンテナ名と不一致。
 
 **Docker チェックで `ECONNREFUSED` / `ENOTFOUND`**
-`PORTAINER_URL` が ollama-proxy コンテナから到達不能。Portainer と同じネットワークに参加しているか、`http://portainer:9000` で名前解決できるか確認。host 経由で叩くなら `http://host.docker.internal:9000` または NAS の LAN IP を直書き。
+`PORTAINER_URL` が ollama-proxy コンテナから到達不能。compose の default は `http://172.17.0.2:9000` で、ollama-proxy が Docker 標準 bridge (`portainer_bridge` external network) に join していることが前提。Portainer のコンテナ IP は `docker inspect portainer --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'` で確認できるので、172.17.0.2 でなければ `.env` の `PORTAINER_URL` を実 IP に書き換える。NAS が host port publish を RST で弾くため `host.docker.internal:9000` 経由は使えない環境がある。
 
 **Topology で全部 down**
 Compose が `n8n_default` network に参加しているか、`monitor_targets.config.url` がコンテナ名(=サービス名)になっているか。
