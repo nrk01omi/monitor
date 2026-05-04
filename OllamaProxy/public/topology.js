@@ -26,6 +26,8 @@
   let chart = null;
   let selectedId = null;
   let lastNodes = [];
+  let lastTargets = [];      // /api/monitor/targets cache (for the edit form)
+  let renderedFor = null;    // selectedId we last did a full side-pane render for
 
   function escapeHtml(s) {
     return String(s ?? '').replace(/[&<>"']/g, c =>
@@ -85,9 +87,18 @@
       wheelSensitivity: 0.2,
     });
 
-    cy.on('tap', 'node', (e) => { selectedId = e.target.id(); renderSide(); });
+    cy.on('tap', 'node', (e) => {
+      const id = e.target.id();
+      if (id !== selectedId) renderedFor = null;   // force full re-render on selection change
+      selectedId = id;
+      renderSide();
+    });
     cy.on('tap', (e) => {
-      if (e.target === cy) { selectedId = null; renderSide(); }
+      if (e.target === cy) {
+        selectedId = null;
+        renderedFor = null;
+        renderSide();
+      }
     });
   }
 
@@ -125,13 +136,15 @@
 
   async function fetchAndRender() {
     try {
-      const [statusRes, topoRes] = await Promise.all([
+      const [statusRes, topoRes, targetsRes] = await Promise.all([
         fetch(`${API}/status`).then(r => r.json()),
         fetch(`${API}/topology`).then(r => r.json()),
+        fetch(`${API}/targets`).then(r => r.json()).catch(() => []),
       ]);
 
       const nodes = statusRes.nodes || [];
       lastNodes = nodes;
+      lastTargets = Array.isArray(targetsRes) ? targetsRes : [];
       const edges = topoRes.edges || [];
       const positions = computeLayout(nodes);
 
@@ -181,20 +194,7 @@
     `;
   }
 
-  function renderSide() {
-    const side = document.getElementById('side');
-    if (!selectedId) {
-      side.innerHTML = '<div class="empty">ノードをクリックすると詳細が表示されます</div>';
-      if (chart) { chart.destroy(); chart = null; }
-      return;
-    }
-
-    const node = lastNodes.find(n => String(n.id) === String(selectedId));
-    if (!node) {
-      side.innerHTML = '<div class="empty">ノード情報なし</div>';
-      return;
-    }
-
+  function buildReadonlyHtml(node) {
     const lat = node.latency_ms != null ? `${Math.round(node.latency_ms)} ms` : '—';
     const lastChecked = node.last_checked
       ? new Date(node.last_checked * 1000).toLocaleTimeString('ja-JP')
@@ -221,20 +221,167 @@
       detailHtml += `<div class="field"><span class="field-key">URL</span><span class="field-val">${escapeHtml(node.detail.url)}</span></div>`;
     }
 
-    side.innerHTML = `
-      <div class="selected-name">${escapeHtml(node.name)}</div>
-      <div class="selected-meta">${escapeHtml(GROUP_LABEL[node.group] || node.group)} · ${escapeHtml(node.type)}</div>
-
+    return `
       <div class="field"><span class="field-key">Status</span><span class="field-val"><span class="dot ${node.status}"></span> ${node.status}</span></div>
       <div class="field"><span class="field-key">応答時間</span><span class="field-val">${lat}</span></div>
       <div class="field"><span class="field-key">最終チェック</span><span class="field-val">${lastChecked}</span></div>
       ${detailHtml}
       ${node.error ? `<div class="err">${escapeHtml(node.error)}</div>` : ''}
+    `;
+  }
+
+  function buildEditFormHtml(target) {
+    if (!target || !['docker', 'http', 'tcp'].includes(target.type)) return '';
+    const cfg = target.config || {};
+    let typeFields = '';
+    if (target.type === 'docker') {
+      typeFields = `
+        <div class="form-row">
+          <label>container_name</label>
+          <input type="text" name="container_name" value="${escapeHtml(cfg.container_name || '')}" required>
+        </div>
+        <div class="form-row">
+          <label>timeout (秒)</label>
+          <input type="number" name="timeout_seconds" value="${cfg.timeout_seconds ?? 5}" min="1">
+        </div>
+      `;
+    } else if (target.type === 'http') {
+      typeFields = `
+        <div class="form-row">
+          <label>URL</label>
+          <input type="text" name="url" value="${escapeHtml(cfg.url || '')}" required>
+        </div>
+        <div class="form-row">
+          <label>timeout (秒)</label>
+          <input type="number" name="timeout_seconds" value="${cfg.timeout_seconds ?? 5}" min="1">
+        </div>
+      `;
+    } else if (target.type === 'tcp') {
+      typeFields = `
+        <div class="form-row">
+          <label>host</label>
+          <input type="text" name="host" value="${escapeHtml(cfg.host || '')}" required>
+        </div>
+        <div class="form-row">
+          <label>port</label>
+          <input type="number" name="port" value="${cfg.port ?? 80}" min="1" max="65535" required>
+        </div>
+        <div class="form-row">
+          <label>timeout (秒)</label>
+          <input type="number" name="timeout_seconds" value="${cfg.timeout_seconds ?? 3}" min="1">
+        </div>
+      `;
+    }
+    return `
+      <form id="edit-form" data-id="${escapeHtml(target.id)}" data-type="${escapeHtml(target.type)}">
+        <h2>設定の編集</h2>
+        <div class="form-row">
+          <label>表示名</label>
+          <input type="text" name="name" value="${escapeHtml(target.name || '')}" required>
+        </div>
+        <div class="form-row form-row-checkbox">
+          <label><input type="checkbox" name="enabled" ${target.enabled ? 'checked' : ''}> 有効</label>
+        </div>
+        ${typeFields}
+        <div class="form-actions">
+          <button type="submit">保存</button>
+          <span id="form-msg"></span>
+        </div>
+      </form>
+    `;
+  }
+
+  function renderSide() {
+    const side = document.getElementById('side');
+    if (!selectedId) {
+      side.innerHTML = '<div class="empty">ノードをクリックすると詳細が表示されます</div>';
+      if (chart) { chart.destroy(); chart = null; }
+      renderedFor = null;
+      return;
+    }
+
+    const node = lastNodes.find(n => String(n.id) === String(selectedId));
+    if (!node) {
+      side.innerHTML = '<div class="empty">ノード情報なし</div>';
+      renderedFor = null;
+      return;
+    }
+
+    // Periodic refresh while the same node is selected: only swap the
+    // readonly subtree so the user's in-progress form input is preserved.
+    if (renderedFor === selectedId) {
+      const ro = document.getElementById('side-readonly');
+      if (ro) ro.innerHTML = buildReadonlyHtml(node);
+      return;
+    }
+
+    // Selection changed (or first render after save) — full render.
+    const target = lastTargets.find(t => t.id === selectedId) || null;
+    side.innerHTML = `
+      <div class="selected-name">${escapeHtml(node.name)}</div>
+      <div class="selected-meta">${escapeHtml(GROUP_LABEL[node.group] || node.group)} · ${escapeHtml(node.type)}</div>
+      <div id="side-readonly">${buildReadonlyHtml(node)}</div>
 
       <h2 style="margin-top:20px">応答時間 (過去1時間)</h2>
       <div class="chart-wrap"><canvas id="trend-chart"></canvas></div>
+      ${buildEditFormHtml(target)}
     `;
+    renderedFor = selectedId;
+    attachFormHandler();
     loadHistory(selectedId);
+  }
+
+  function attachFormHandler() {
+    const form = document.getElementById('edit-form');
+    if (!form) return;
+    form.addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const id = form.dataset.id;
+      const type = form.dataset.type;
+      const fd = new FormData(form);
+      const config = {};
+      const t = fd.get('timeout_seconds');
+      if (t) config.timeout_seconds = parseInt(t, 10);
+      if (type === 'docker') {
+        config.container_name = fd.get('container_name');
+      } else if (type === 'http') {
+        config.url = fd.get('url');
+      } else if (type === 'tcp') {
+        config.host = fd.get('host');
+        config.port = parseInt(fd.get('port'), 10);
+      }
+      const body = {
+        name:    fd.get('name'),
+        enabled: fd.has('enabled'),
+        config,
+      };
+      const msg = document.getElementById('form-msg');
+      const submitBtn = form.querySelector('button[type="submit"]');
+      msg.textContent = '保存中...';
+      msg.className = '';
+      submitBtn.disabled = true;
+      try {
+        const res = await fetch(`${API}/targets/${encodeURIComponent(id)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || `HTTP ${res.status}`);
+        }
+        msg.textContent = '保存しました';
+        msg.className = 'msg-ok';
+        // Force a full re-render after the next poll picks up the new config
+        renderedFor = null;
+        fetchAndRender();
+      } catch (e) {
+        msg.textContent = `エラー: ${e.message}`;
+        msg.className = 'msg-err';
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
   }
 
   async function loadHistory(targetId) {
