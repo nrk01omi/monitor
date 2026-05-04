@@ -7,6 +7,7 @@ RUN npm ci --omit=dev
 
 COPY src ./src
 COPY public ./public
+COPY seed ./seed
 
 # Ensure the data dir exists and is writable by the unprivileged node user.
 # Using a named volume in docker-compose.yml avoids host UID/GID mismatch.

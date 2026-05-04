@@ -14,9 +14,6 @@ services:
       - ollama-proxy-data:/app/data
       # Docker socket — read-only is enough for the infra monitor's docker checker
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      # One-time seed of monitor targets/edges from the legacy Python config.yaml.
-      # Safe to leave mounted: seedFromYaml is a no-op once the targets table has rows.
-      - ../config.yaml:/app/config/monitor.yaml:ro
     environment:
       # OLLAMA_HOST is consumed only on first boot to seed the upstreams table.
       # After that, manage upstreams from the dashboard. host.docker.internal

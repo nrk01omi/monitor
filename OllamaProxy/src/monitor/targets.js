@@ -98,10 +98,14 @@ function deleteEdge(id) {
 function seedFromYaml() {
   if (db.countMonitorTargets() > 0) return;
 
+  // Look for the seed YAML in:
+  //   1. MONITOR_CONFIG_PATH env (operator override, e.g. compose mount)
+  //   2. /app/seed/monitor.yaml (image-bundled seed inside container)
+  //   3. ../../seed/monitor.yaml (local dev — relative to src/monitor/)
   const candidates = [
     process.env.MONITOR_CONFIG_PATH,
-    '/app/config/monitor.yaml',
-    path.join(__dirname, '..', '..', 'config', 'monitor.yaml'),
+    '/app/seed/monitor.yaml',
+    path.join(__dirname, '..', '..', 'seed', 'monitor.yaml'),
   ].filter(Boolean);
 
   let yamlPath = null;
