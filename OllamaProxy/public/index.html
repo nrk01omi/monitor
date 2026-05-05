@@ -365,6 +365,57 @@
     border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Upstream form modal */
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(13,17,23,0.7);
+    display: none; align-items: center; justify-content: center; z-index: 200;
+  }
+  .modal-backdrop.show { display: flex; }
+  .modal-card {
+    background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius);
+    width: 480px; max-width: 92vw; max-height: 86vh; overflow-y: auto;
+    padding: 18px 20px;
+  }
+  .modal-card h2 { font-size: 15px; margin-bottom: 14px; }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+  .modal-card .btn-primary { background: var(--accent); border-color: var(--accent); color: #0d1117; font-weight: 600; }
+  .modal-card .btn-primary:hover { background: #79b8ff; }
+  .form-help { font-size: 11px; color: var(--text2); margin-top: 2px; }
+  .form-error { font-size: 12px; color: var(--red); margin-top: 6px; min-height: 14px; }
+  .model-list-box {
+    border: 1px solid var(--border); border-radius: var(--radius); padding: 6px;
+    max-height: 180px; overflow-y: auto; background: var(--bg);
+  }
+  .model-list-box label {
+    display: flex; align-items: center; gap: 6px; padding: 3px 4px;
+    font-family: var(--mono); font-size: 12px; color: var(--text);
+  }
+  .model-list-box label:hover { background: var(--border); border-radius: 3px; }
+
+  /* Per-upstream model matrix (inside <details>) */
+  .matrix-wrap { margin-top: 8px; border-top: 1px dashed var(--border); padding-top: 8px; }
+  .matrix-wrap > summary { font-size: 12px; color: var(--text2); cursor: pointer; user-select: none; }
+  .matrix-wrap > summary:hover { color: var(--accent); }
+  .matrix-table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12px; }
+  .matrix-table th, .matrix-table td {
+    border-bottom: 1px solid var(--border); padding: 4px 6px; text-align: left;
+  }
+  .matrix-table th { color: var(--text2); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .4px; }
+  .matrix-table td.col-name { font-family: var(--mono); }
+  .matrix-table input[type="number"] {
+    width: 60px; background: var(--bg); border: 1px solid var(--border); border-radius: 3px;
+    color: var(--text); padding: 2px 4px; font-family: var(--mono); font-size: 12px;
+  }
+  .matrix-table .row-actions { display: flex; gap: 4px; justify-content: flex-end; }
+  .matrix-add-row { display: flex; gap: 6px; margin-top: 8px; align-items: center; flex-wrap: wrap; }
+  .bench-result {
+    margin-top: 6px; padding: 8px; background: var(--bg); border: 1px solid var(--border);
+    border-radius: var(--radius); font-size: 12px; font-family: var(--mono);
+  }
+  .bench-result .bm-row { display: grid; grid-template-columns: 110px repeat(4, 1fr); gap: 4px 8px; }
+  .bench-result .bm-row .bm-lbl { color: var(--text2); }
+  .bench-result h4 { font-size: 11px; text-transform: uppercase; color: var(--text2); margin-bottom: 4px; letter-spacing: .4px; }
 </style>
 </head>
 <body>
@@ -513,6 +564,57 @@
   <div class="spinner"></div>
   <div id="restartText" style="font-size:14px;">Restarting…</div>
   <div id="restartHint" style="font-size:12px; color: var(--text2);"></div>
+</div>
+
+<!-- Upstream form modal (Add / Edit) -->
+<div class="modal-backdrop" id="upstreamModal">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="upstreamModalTitle">
+    <h2 id="upstreamModalTitle">Add upstream</h2>
+    <div class="form-row">
+      <label for="umName">Name</label>
+      <input type="text" id="umName" placeholder="local-ollama">
+    </div>
+    <div class="form-row">
+      <label for="umUrl">URL</label>
+      <input type="text" id="umUrl" placeholder="http://localhost:11434">
+    </div>
+    <div class="form-row">
+      <label for="umProtocol">Protocol</label>
+      <select id="umProtocol">
+        <option value="ollama">ollama (/api/tags, /api/chat)</option>
+        <option value="openai">openai (/v1/models, /v1/chat/completions)</option>
+      </select>
+    </div>
+    <div class="form-row">
+      <label>Models</label>
+      <div style="display:flex; gap:6px; align-items:center;">
+        <button class="btn" id="umFetchBtn" type="button">モデル取得</button>
+        <span class="form-help" id="umFetchStatus"></span>
+      </div>
+      <div class="model-list-box" id="umModelList" style="display:none;"></div>
+      <textarea id="umModelManual" rows="3" placeholder="One model name per line (fallback when fetch fails)" style="display:none;"></textarea>
+      <div class="form-help">Selected model names are stored in the upstream-model matrix and used for routing.</div>
+    </div>
+    <div class="form-row" style="flex-direction: row; gap: 12px;">
+      <div style="flex: 1;">
+        <label for="umPriority">Upstream priority</label>
+        <input type="number" id="umPriority" value="0" style="width: 100%;">
+      </div>
+      <div style="flex: 1; display:flex; flex-direction:column; gap:6px; padding-top: 18px;">
+        <label style="display:flex; gap:6px; align-items:center; font-size:13px; color: var(--text);">
+          <input type="checkbox" id="umIsDefault"> default (fallback)
+        </label>
+        <label style="display:flex; gap:6px; align-items:center; font-size:13px; color: var(--text);">
+          <input type="checkbox" id="umEnabled" checked> enabled
+        </label>
+      </div>
+    </div>
+    <div class="form-error" id="umError"></div>
+    <div class="modal-actions">
+      <button class="btn" id="umCancel" type="button">Cancel</button>
+      <button class="btn btn-primary" id="umSubmit" type="button">Save</button>
+    </div>
+  </div>
 </div>
 
 <script src="/nav.js"></script>
@@ -1048,8 +1150,6 @@
   function renderUpstream(u) {
     const wrap = document.createElement('div');
     wrap.className = 'upstream-row';
-    let patterns = '[]';
-    try { patterns = JSON.parse(u.model_patterns).join(', '); } catch {}
 
     const status = (u.status || 'unknown').toLowerCase();
     const badgeClass = ['ok','error','unknown'].includes(status) ? status : 'unknown';
@@ -1057,6 +1157,7 @@
     const latency = u.latency_ms != null ? ` (${u.latency_ms}ms)` : '';
 
     const protocol = u.protocol || 'ollama';
+    const matrixCount = Array.isArray(u.matrix) ? u.matrix.length : 0;
 
     wrap.innerHTML = `
       <div class="ur-head">
@@ -1072,8 +1173,12 @@
       </div>
       <div class="ur-url">${escapeHtml(u.url)}</div>
       <div style="font-size:12px; color:var(--text2); margin-top:4px;">
-        patterns: <code>${escapeHtml(patterns)}</code> · priority: ${u.priority} · ${u.enabled ? 'enabled' : 'disabled'}
+        priority: ${u.priority} · ${u.enabled ? 'enabled' : 'disabled'} · models: ${matrixCount}
       </div>
+      <details class="matrix-wrap" data-upstream-id="${u.id}">
+        <summary>Models matrix (${matrixCount}) — click to expand</summary>
+        <div class="matrix-body" data-loaded="0"></div>
+      </details>
     `;
 
     wrap.querySelector('[data-act=check]').addEventListener('click', async () => {
@@ -1082,72 +1187,338 @@
         refreshUpstreams();
       } catch (e) { alert(e.message); }
     });
-    wrap.querySelector('[data-act=edit]').addEventListener('click', () => editUpstream(u));
+    wrap.querySelector('[data-act=edit]').addEventListener('click', () => openUpstreamModal(u));
     wrap.querySelector('[data-act=delete]').addEventListener('click', () => deleteUpstream(u));
+
+    const det = wrap.querySelector('details.matrix-wrap');
+    det.addEventListener('toggle', () => {
+      if (det.open && det.querySelector('.matrix-body').dataset.loaded === '0') {
+        loadMatrix(u);
+      }
+    });
     return wrap;
   }
 
-  function promptUpstream(initial = {}) {
-    const name = prompt('Name:', initial.name ?? '');
-    if (name === null) return null;
-    const url = prompt('URL (e.g. http://host:11434 for Ollama, http://host:1234 for LM Studio):', initial.url ?? 'http://localhost:11434');
-    if (url === null) return null;
-    const protocol = prompt('Protocol (ollama | openai):\nollama → /api/tags, /api/chat\nopenai → /v1/models, /v1/chat/completions  (LM Studio, vLLM, etc.)', initial.protocol ?? 'ollama');
-    if (protocol === null) return null;
-    if (!['ollama', 'openai'].includes(protocol.trim())) {
-      alert('Protocol must be "ollama" or "openai"');
-      return null;
-    }
-    let patternsStr;
+  // ── Model matrix rendering ──
+  async function loadMatrix(u) {
+    const wrap = document.querySelector(`.matrix-wrap[data-upstream-id="${u.id}"] .matrix-body`);
+    if (!wrap) return;
+    wrap.innerHTML = '<div style="font-size:12px; color: var(--text2); padding:6px;">Loading…</div>';
     try {
-      const init = initial.model_patterns ? JSON.parse(initial.model_patterns).join(', ') : '*';
-      patternsStr = prompt('Model patterns (comma-separated globs, e.g. "qwen3.6:*, llama3:*"):', init);
-    } catch {
-      patternsStr = prompt('Model patterns (comma-separated globs):', '*');
+      const rows = await fetchJSON(`/api/upstreams/${u.id}/models`);
+      renderMatrix(wrap, u, rows);
+      wrap.dataset.loaded = '1';
+    } catch (e) {
+      wrap.innerHTML = `<div style="color: var(--red); font-size:12px;">${escapeHtml(e.message)}</div>`;
     }
-    if (patternsStr === null) return null;
-    const priorityStr = prompt('Priority (higher wins on tie):', String(initial.priority ?? 0));
-    if (priorityStr === null) return null;
-    const isDefaultStr = prompt('Mark as default (fallback)? y/n:', initial.is_default ? 'y' : 'n');
-    if (isDefaultStr === null) return null;
-    return {
-      name: name.trim(),
-      url: url.trim(),
-      protocol: protocol.trim(),
-      model_patterns: patternsStr.split(',').map(s => s.trim()).filter(Boolean),
-      priority: parseInt(priorityStr, 10) || 0,
-      is_default: isDefaultStr.trim().toLowerCase().startsWith('y'),
-      enabled: true,
-    };
   }
 
-  async function addUpstream() {
-    const data = promptUpstream();
-    if (!data) return;
+  function renderMatrix(wrap, u, rows) {
+    wrap.innerHTML = '';
+    const table = document.createElement('table');
+    table.className = 'matrix-table';
+    table.innerHTML = `
+      <thead>
+        <tr>
+          <th>Model</th>
+          <th style="width:80px;">Priority</th>
+          <th style="width:60px;">Enabled</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    `;
+    const tbody = table.querySelector('tbody');
+    if (rows.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="4" style="color:var(--text2); text-align:center; padding:8px;">No models registered yet — they auto-populate after the next health probe, or add them manually below.</td></tr>`;
+    }
+    for (const row of rows) {
+      tbody.appendChild(renderMatrixRow(u, row));
+    }
+    wrap.appendChild(table);
+
+    // Add-row UI
+    const addRow = document.createElement('div');
+    addRow.className = 'matrix-add-row';
+    addRow.innerHTML = `
+      <input type="text" placeholder="model_name (e.g. qwen3:8b)" style="flex:1; min-width:160px; background:var(--bg); border:1px solid var(--border); border-radius:3px; color:var(--text); padding:4px 6px; font-family:var(--mono); font-size:12px;">
+      <input type="number" placeholder="priority" value="0" style="width:80px;">
+      <button class="btn" data-act="add">+ Add model</button>
+      <button class="btn" data-act="probe-here">Fetch from upstream</button>
+    `;
+    addRow.querySelector('[data-act=add]').addEventListener('click', async () => {
+      const nameInput = addRow.querySelector('input[type="text"]');
+      const prInput   = addRow.querySelector('input[type="number"]');
+      const name = nameInput.value.trim();
+      if (!name) { alert('model_name required'); return; }
+      try {
+        const r = await fetch(`/api/upstreams/${u.id}/models`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ model_name: name, priority: parseInt(prInput.value, 10) || 0, enabled: true }),
+        });
+        if (!r.ok) throw new Error((await r.json()).error || `HTTP ${r.status}`);
+        nameInput.value = '';
+        prInput.value = '0';
+        loadMatrix(u);
+      } catch (e) { alert(e.message); }
+    });
+    addRow.querySelector('[data-act=probe-here]').addEventListener('click', async () => {
+      try {
+        const r = await fetch('/api/upstreams/probe-models', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ url: u.url, protocol: u.protocol }),
+        });
+        if (!r.ok) throw new Error((await r.json()).error || `HTTP ${r.status}`);
+        const { models } = await r.json();
+        const existing = new Set(rows.map(x => x.model_name));
+        const fresh = models.filter(m => !existing.has(m));
+        if (fresh.length === 0) { alert('No new models found.'); return; }
+        if (!confirm(`Add ${fresh.length} new model(s)?\n${fresh.join('\n')}`)) return;
+        const r2 = await fetch(`/api/upstreams/${u.id}/models`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ models: fresh.map(name => ({ model_name: name })) }),
+        });
+        if (!r2.ok) throw new Error((await r2.json()).error || `HTTP ${r2.status}`);
+        loadMatrix(u);
+      } catch (e) { alert('Fetch failed: ' + e.message); }
+    });
+    wrap.appendChild(addRow);
+  }
+
+  function renderMatrixRow(u, row) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td class="col-name">${escapeHtml(row.model_name)}</td>
+      <td><input type="number" value="${row.priority}" data-field="priority"></td>
+      <td><input type="checkbox" data-field="enabled" ${row.enabled ? 'checked' : ''}></td>
+      <td class="row-actions">
+        <button class="btn" data-act="bench">Bench</button>
+        <button class="btn btn-danger" data-act="delete">×</button>
+      </td>
+    `;
+    const prInput = tr.querySelector('input[data-field="priority"]');
+    const enInput = tr.querySelector('input[data-field="enabled"]');
+    const save = async () => {
+      try {
+        const r = await fetch(`/api/upstreams/${u.id}/models/${encodeURIComponent(row.model_name)}`, {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            priority: parseInt(prInput.value, 10) || 0,
+            enabled: enInput.checked,
+          }),
+        });
+        if (!r.ok) throw new Error((await r.json()).error || `HTTP ${r.status}`);
+      } catch (e) { alert(e.message); }
+    };
+    prInput.addEventListener('change', save);
+    enInput.addEventListener('change', save);
+
+    tr.querySelector('[data-act=delete]').addEventListener('click', async () => {
+      if (!confirm(`Remove ${row.model_name} from this upstream?`)) return;
+      try {
+        const r = await fetch(`/api/upstreams/${u.id}/models/${encodeURIComponent(row.model_name)}`, { method: 'DELETE' });
+        if (!r.ok) throw new Error((await r.json()).error || `HTTP ${r.status}`);
+        loadMatrix(u);
+      } catch (e) { alert(e.message); }
+    });
+
+    tr.querySelector('[data-act=bench]').addEventListener('click', () => runBenchmark(u, row.model_name, tr));
+    return tr;
+  }
+
+  async function runBenchmark(u, modelName, anchorRow) {
+    const runs = parseInt(prompt('Number of runs (1-20):', '5'), 10);
+    if (!Number.isInteger(runs) || runs < 1 || runs > 20) return;
+    let resultBox = anchorRow.nextElementSibling;
+    if (!resultBox || !resultBox.classList.contains('bench-result-row')) {
+      resultBox = document.createElement('tr');
+      resultBox.className = 'bench-result-row';
+      resultBox.innerHTML = `<td colspan="4"><div class="bench-result"></div></td>`;
+      anchorRow.after(resultBox);
+    }
+    const inner = resultBox.querySelector('.bench-result');
+    inner.innerHTML = `<div style="color:var(--text2);">Running ${runs} run(s) against ${escapeHtml(modelName)}…</div>`;
     try {
-      const r = await fetch('/api/upstreams', {
+      const r = await fetch('/api/benchmark', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(data),
+        body: JSON.stringify({ upstream_id: u.id, model: modelName, runs }),
       });
-      if (!r.ok) throw new Error((await r.json()).error || `HTTP ${r.status}`);
-      refreshUpstreams();
-    } catch (e) { alert('Add failed: ' + e.message); }
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      inner.innerHTML = renderBenchmarkResult(data);
+    } catch (e) {
+      inner.innerHTML = `<div style="color:var(--red);">Bench failed: ${escapeHtml(e.message)}</div>`;
+    }
   }
 
-  async function editUpstream(u) {
-    const data = promptUpstream(u);
-    if (!data) return;
+  function fmt(n, suffix = '') {
+    if (n === null || n === undefined || Number.isNaN(n)) return '–';
+    if (typeof n !== 'number') return String(n);
+    if (Math.abs(n) >= 100) return Math.round(n) + suffix;
+    return (Math.round(n * 10) / 10) + suffix;
+  }
+
+  function renderBenchmarkResult(data) {
+    const s = data.summary || {};
+    const metric = (key, suffix) => {
+      const m = s[key] || {};
+      return `<div class="bm-row">
+        <span class="bm-lbl">${key}</span>
+        <span>median ${fmt(m.median, suffix)}</span>
+        <span>mean ${fmt(m.mean, suffix)}</span>
+        <span>min ${fmt(m.min, suffix)}</span>
+        <span>max ${fmt(m.max, suffix)}</span>
+      </div>`;
+    };
+    const errors = (data.runs || []).filter(r => r.error);
+    return `
+      <h4>${escapeHtml(data.upstream_name)} · ${escapeHtml(data.model)} · ${data.runs.length} runs</h4>
+      ${metric('total_ms', 'ms')}
+      ${metric('ttft_ms', 'ms')}
+      ${metric('tokens_per_sec', ' t/s')}
+      ${errors.length ? `<div style="color:var(--red); margin-top:6px;">${errors.length} run(s) failed: ${escapeHtml(errors[0].error || '')}</div>` : ''}
+    `;
+  }
+
+  // ── Upstream modal (Add / Edit) ──
+  const um = {
+    backdrop: $('upstreamModal'),
+    title:    $('upstreamModalTitle'),
+    name:     $('umName'),
+    url:      $('umUrl'),
+    protocol: $('umProtocol'),
+    fetchBtn: $('umFetchBtn'),
+    fetchStatus: $('umFetchStatus'),
+    list:     $('umModelList'),
+    manual:   $('umModelManual'),
+    priority: $('umPriority'),
+    isDefault:$('umIsDefault'),
+    enabled:  $('umEnabled'),
+    error:    $('umError'),
+    submit:   $('umSubmit'),
+    cancel:   $('umCancel'),
+    editingId: null,
+  };
+
+  function openUpstreamModal(initial = null) {
+    um.editingId = initial?.id ?? null;
+    um.title.textContent = initial ? `Edit upstream: ${initial.name}` : 'Add upstream';
+    um.name.value = initial?.name ?? '';
+    um.url.value = initial?.url ?? 'http://localhost:11434';
+    um.protocol.value = initial?.protocol ?? 'ollama';
+    um.priority.value = initial?.priority ?? 0;
+    um.isDefault.checked = !!initial?.is_default;
+    um.enabled.checked = initial ? !!initial.enabled : true;
+    um.list.innerHTML = '';
+    um.list.style.display = 'none';
+    um.manual.value = '';
+    um.manual.style.display = 'none';
+    um.error.textContent = '';
+    um.fetchStatus.textContent = '';
+    um.backdrop.classList.add('show');
+    um.name.focus();
+  }
+  function closeUpstreamModal() {
+    um.backdrop.classList.remove('show');
+    um.editingId = null;
+  }
+
+  um.fetchBtn.addEventListener('click', async () => {
+    const url = um.url.value.trim();
+    const protocol = um.protocol.value;
+    if (!url) { um.error.textContent = 'URL required first'; return; }
+    um.error.textContent = '';
+    um.fetchStatus.textContent = 'Fetching…';
+    um.fetchBtn.disabled = true;
     try {
-      const r = await fetch(`/api/upstreams/${u.id}`, {
-        method: 'PUT',
+      const r = await fetch('/api/upstreams/probe-models', {
+        method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(data),
+        body: JSON.stringify({ url, protocol }),
       });
       if (!r.ok) throw new Error((await r.json()).error || `HTTP ${r.status}`);
+      const { models } = await r.json();
+      um.fetchStatus.textContent = `${models.length} model(s) found`;
+      um.list.innerHTML = models.map(m =>
+        `<label><input type="checkbox" value="${escapeHtml(m)}" checked> ${escapeHtml(m)}</label>`
+      ).join('') || '<div style="color:var(--text2); padding:6px; font-size:12px;">No models reported.</div>';
+      um.list.style.display = 'block';
+      um.manual.style.display = 'none';
+    } catch (e) {
+      um.fetchStatus.textContent = '';
+      um.error.textContent = 'Fetch failed: ' + e.message + ' — fall back to manual entry below';
+      um.list.style.display = 'none';
+      um.manual.style.display = 'block';
+    } finally {
+      um.fetchBtn.disabled = false;
+    }
+  });
+
+  um.cancel.addEventListener('click', closeUpstreamModal);
+  um.backdrop.addEventListener('click', e => { if (e.target === um.backdrop) closeUpstreamModal(); });
+
+  um.submit.addEventListener('click', async () => {
+    const name = um.name.value.trim();
+    const url  = um.url.value.trim();
+    if (!name || !url) { um.error.textContent = 'Name and URL required'; return; }
+
+    const selectedModels = [];
+    if (um.list.style.display !== 'none') {
+      um.list.querySelectorAll('input[type="checkbox"]:checked').forEach(c => selectedModels.push(c.value));
+    }
+    if (um.manual.style.display !== 'none') {
+      um.manual.value.split('\n').map(s => s.trim()).filter(Boolean).forEach(n => selectedModels.push(n));
+    }
+
+    const payload = {
+      name, url,
+      protocol: um.protocol.value,
+      priority: parseInt(um.priority.value, 10) || 0,
+      is_default: um.isDefault.checked,
+      enabled: um.enabled.checked,
+    };
+    um.error.textContent = '';
+    um.submit.disabled = true;
+    try {
+      let upstreamId = um.editingId;
+      if (upstreamId == null) {
+        const r = await fetch('/api/upstreams', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (!r.ok) throw new Error((await r.json()).error || `HTTP ${r.status}`);
+        const created = await r.json();
+        upstreamId = created.id;
+      } else {
+        const r = await fetch(`/api/upstreams/${upstreamId}`, {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (!r.ok) throw new Error((await r.json()).error || `HTTP ${r.status}`);
+      }
+      if (selectedModels.length > 0) {
+        const r = await fetch(`/api/upstreams/${upstreamId}/models`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ models: selectedModels.map(m => ({ model_name: m })) }),
+        });
+        if (!r.ok) throw new Error((await r.json()).error || `HTTP ${r.status}`);
+      }
+      closeUpstreamModal();
       refreshUpstreams();
-    } catch (e) { alert('Update failed: ' + e.message); }
-  }
+    } catch (e) {
+      um.error.textContent = e.message;
+    } finally {
+      um.submit.disabled = false;
+    }
+  });
 
   async function deleteUpstream(u) {
     if (!confirm(`Delete upstream "${u.name}"?`)) return;
@@ -1158,7 +1529,7 @@
     } catch (e) { alert('Delete failed: ' + e.message); }
   }
 
-  $('btnAddUpstream').addEventListener('click', addUpstream);
+  $('btnAddUpstream').addEventListener('click', () => openUpstreamModal());
 
   $('btnSaveSettings').addEventListener('click', async () => {
     const proxy_port            = parseInt($('setProxyPort').value, 10);

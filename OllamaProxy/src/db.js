@@ -98,6 +98,17 @@ db.exec(`
     models        TEXT
   );
 
+  CREATE TABLE IF NOT EXISTS upstream_models (
+    upstream_id  INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
+    model_name   TEXT    NOT NULL,
+    priority     INTEGER NOT NULL DEFAULT 0,
+    enabled      INTEGER NOT NULL DEFAULT 1,
+    created_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (upstream_id, model_name)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_upstream_models_name ON upstream_models(model_name);
+
   CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -416,6 +427,73 @@ function getUpstreamHealth(upstreamId) {
   return db.prepare('SELECT * FROM upstream_health WHERE upstream_id = ?').get(upstreamId);
 }
 
+// ── Upstream model matrix ──
+// Per-upstream registered models with priority used as tiebreaker when the
+// same model is offered by multiple upstreams. enabled=0 excludes that
+// upstream/model pair from routing.
+
+function listUpstreamModels(upstreamId) {
+  return db.prepare(`
+    SELECT upstream_id, model_name, priority, enabled, created_at
+    FROM upstream_models
+    WHERE upstream_id = ?
+    ORDER BY priority DESC, model_name ASC
+  `).all(upstreamId);
+}
+
+function getUpstreamModel(upstreamId, modelName) {
+  return db.prepare(`
+    SELECT upstream_id, model_name, priority, enabled, created_at
+    FROM upstream_models
+    WHERE upstream_id = ? AND model_name = ?
+  `).get(upstreamId, modelName);
+}
+
+function upsertUpstreamModel(upstreamId, modelName, { priority, enabled } = {}) {
+  db.prepare(`
+    INSERT INTO upstream_models (upstream_id, model_name, priority, enabled)
+    VALUES ($upstream_id, $model_name, $priority, $enabled)
+    ON CONFLICT(upstream_id, model_name) DO UPDATE SET
+      priority = COALESCE($priority, upstream_models.priority),
+      enabled  = COALESCE($enabled,  upstream_models.enabled)
+  `).run({
+    upstream_id: upstreamId,
+    model_name:  modelName,
+    priority:    priority ?? 0,
+    enabled:     enabled === undefined ? 1 : (enabled ? 1 : 0),
+  });
+  return getUpstreamModel(upstreamId, modelName);
+}
+
+function deleteUpstreamModel(upstreamId, modelName) {
+  const r = db.prepare(
+    'DELETE FROM upstream_models WHERE upstream_id = ? AND model_name = ?'
+  ).run(upstreamId, modelName);
+  return r.changes > 0;
+}
+
+function bulkInsertUpstreamModels(upstreamId, names) {
+  if (!Array.isArray(names) || names.length === 0) return 0;
+  const stmt = db.prepare(`
+    INSERT OR IGNORE INTO upstream_models (upstream_id, model_name)
+    VALUES (?, ?)
+  `);
+  let inserted = 0;
+  db.exec('BEGIN');
+  try {
+    for (const name of names) {
+      if (!name || typeof name !== 'string') continue;
+      const r = stmt.run(upstreamId, name);
+      inserted += r.changes;
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+  return inserted;
+}
+
 // ── Monitor targets / edges / checks ──
 
 function listMonitorTargets() {
@@ -612,6 +690,8 @@ module.exports = {
   insertMetrics, getLatestMetrics, getMetricsHistory,
   listUpstreams, getUpstreamById, insertUpstream, updateUpstream, deleteUpstream,
   countEnabledUpstreams, upsertUpstreamHealth, getUpstreamHealth,
+  listUpstreamModels, getUpstreamModel, upsertUpstreamModel, deleteUpstreamModel,
+  bulkInsertUpstreamModels,
   listMonitorTargets, getMonitorTarget, insertMonitorTarget, updateMonitorTarget,
   deleteMonitorTarget, countMonitorTargets,
   listMonitorEdges, insertMonitorEdge, deleteMonitorEdge,

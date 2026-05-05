@@ -8,6 +8,7 @@ const { getRequests, getRequestById, getStats, getModels,
 const config = require('./config');
 const upstreams = require('./upstreams');
 const health = require('./health');
+const benchmark = require('./benchmark');
 const monitorRoutes = require('./monitor/routes');
 const archiver = require('./archiver');
 
@@ -164,6 +165,127 @@ app.post('/api/upstreams/:id/check', async (req, res) => {
     res.json(result);
   } catch (e) {
     res.status(400).json({ error: e.message });
+  }
+});
+
+// ── Upstream model matrix ──────────────────────────────────────────────────
+// Ad-hoc probe used by the AddUpstream form before the upstream is persisted.
+// Body: { url, protocol }. Returns { models: [...] }.
+app.post('/api/upstreams/probe-models', async (req, res) => {
+  const { url, protocol } = req.body || {};
+  if (!url) return res.status(400).json({ error: 'url required' });
+  if (protocol && !VALID_PROTOCOLS.includes(protocol)) {
+    return res.status(400).json({ error: `protocol must be one of: ${VALID_PROTOCOLS.join(', ')}` });
+  }
+  try {
+    const models = await health.probeModelsAdHoc({ url, protocol: protocol || 'ollama' });
+    res.json({ models });
+  } catch (e) {
+    const status = e.code === 'ECONNABORTED' || /timeout/i.test(e.message || '') ? 504 : 502;
+    const msg = e.message || e.code || 'upstream unreachable';
+    res.status(status).json({ error: msg, code: e.code });
+  }
+});
+
+app.get('/api/upstreams/:id/models', (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!db.getUpstreamById(id)) return res.status(404).json({ error: 'upstream not found' });
+  try {
+    const rows = db.listUpstreamModels(id).map(r => ({
+      ...r,
+      enabled: !!r.enabled,
+    }));
+    res.json(rows);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Accept either { model_name, priority?, enabled? } or { models: [{model_name, priority?, enabled?}, ...] }
+app.post('/api/upstreams/:id/models', (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!db.getUpstreamById(id)) return res.status(404).json({ error: 'upstream not found' });
+  const body = req.body || {};
+  try {
+    let added = [];
+    if (Array.isArray(body.models)) {
+      for (const m of body.models) {
+        if (!m || typeof m.model_name !== 'string' || !m.model_name) continue;
+        added.push(db.upsertUpstreamModel(id, m.model_name, {
+          priority: Number.isInteger(m.priority) ? m.priority : undefined,
+          enabled:  m.enabled === undefined ? undefined : !!m.enabled,
+        }));
+      }
+    } else if (typeof body.model_name === 'string' && body.model_name) {
+      added.push(db.upsertUpstreamModel(id, body.model_name, {
+        priority: Number.isInteger(body.priority) ? body.priority : undefined,
+        enabled:  body.enabled === undefined ? undefined : !!body.enabled,
+      }));
+    } else {
+      return res.status(400).json({ error: 'model_name or models[] required' });
+    }
+    upstreams.reload();
+    res.status(201).json(added.map(r => ({ ...r, enabled: !!r.enabled })));
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.put('/api/upstreams/:id/models/:model_name', (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const modelName = req.params.model_name;
+  if (!db.getUpstreamById(id)) return res.status(404).json({ error: 'upstream not found' });
+  if (!db.getUpstreamModel(id, modelName)) return res.status(404).json({ error: 'model not registered for upstream' });
+  const body = req.body || {};
+  if (body.priority !== undefined && !Number.isInteger(body.priority)) {
+    return res.status(400).json({ error: 'priority must be integer' });
+  }
+  try {
+    const row = db.upsertUpstreamModel(id, modelName, {
+      priority: Number.isInteger(body.priority) ? body.priority : undefined,
+      enabled:  body.enabled === undefined ? undefined : !!body.enabled,
+    });
+    upstreams.reload();
+    res.json({ ...row, enabled: !!row.enabled });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.delete('/api/upstreams/:id/models/:model_name', (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const modelName = req.params.model_name;
+  if (!db.getUpstreamById(id)) return res.status(404).json({ error: 'upstream not found' });
+  try {
+    const ok = db.deleteUpstreamModel(id, modelName);
+    if (!ok) return res.status(404).json({ error: 'model not registered for upstream' });
+    upstreams.reload();
+    res.json({ deleted: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// ── External LLM benchmark ─────────────────────────────────────────────────
+// POST /api/benchmark
+// Body: { upstream_id, model, runs?, prompt?, timeout_ms? }
+// Limited to registered upstreams (SSRF mitigation, see NFR-4).
+app.post('/api/benchmark', async (req, res) => {
+  const body = req.body || {};
+  try {
+    const result = await benchmark.run({
+      upstream_id: Number.isInteger(body.upstream_id) ? body.upstream_id : parseInt(body.upstream_id, 10),
+      model:       body.model,
+      runs:        body.runs,
+      prompt:      body.prompt,
+      timeout_ms:  body.timeout_ms,
+    });
+    res.json(result);
+  } catch (e) {
+    const status = e.status || 500;
+    const payload = { error: e.message };
+    if (e.runs) payload.runs = e.runs;
+    res.status(status).json(payload);
   }
 });
 

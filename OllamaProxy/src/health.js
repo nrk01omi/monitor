@@ -60,6 +60,13 @@ async function probe(upstream) {
         latency_ms: latency,
         models: JSON.stringify(models),
       });
+      // Auto-register newly-discovered models into the matrix (priority 0,
+      // enabled). Existing rows are preserved by INSERT OR IGNORE so user
+      // edits to priority/enabled survive across probes.
+      if (models.length > 0) {
+        try { db.bulkInsertUpstreamModels(upstream.id, models); }
+        catch (e) { console.error('[Health] bulkInsertUpstreamModels failed:', e.message); }
+      }
     }
   } catch (err) {
     db.upsertUpstreamHealth(upstream.id, {
@@ -69,6 +76,24 @@ async function probe(upstream) {
       models: null,
     });
   }
+}
+
+// Ad-hoc probe used by the AddUpstream form before the upstream is persisted.
+// Same network logic as probe() but writes nothing to the DB.
+async function probeModelsAdHoc({ url, protocol = 'ollama' }) {
+  const proto = PROTOCOLS[protocol];
+  if (!proto) throw new Error(`unsupported protocol: ${protocol}`);
+  if (!url || typeof url !== 'string') throw new Error('url required');
+  const resp = await axios.get(`${url.replace(/\/+$/, '')}${proto.listPath}`, {
+    timeout: POLL_TIMEOUT_MS,
+    validateStatus: s => s >= 200 && s < 500,
+  });
+  if (resp.status >= 400) {
+    const err = new Error(`HTTP ${resp.status}`);
+    err.status = resp.status;
+    throw err;
+  }
+  return proto.extractModels(resp.data);
 }
 
 async function pollAll() {
@@ -111,4 +136,4 @@ async function checkOne(id) {
   return db.getUpstreamHealth(id);
 }
 
-module.exports = { start, checkOne };
+module.exports = { start, checkOne, probeModelsAdHoc };

@@ -40,6 +40,9 @@ function reload() {
   cache = db.listUpstreams().map(u => ({
     ...u,
     url: normalizeUrl(u.url),
+    // Attach the per-upstream model matrix so resolveUpstream() can read it
+    // without hitting the DB on the hot path.
+    matrix: db.listUpstreamModels(u.id),
   }));
   emitter.emit('changed', cache);
 }
@@ -74,27 +77,37 @@ function getById(id) {
 }
 
 // Routing rules:
-//   1. If model is given, find enabled upstreams whose patterns match.
-//   2. Among matches, sort by priority DESC (explicit user control wins).
-//      Tie-breaker: non-default before default — so a specific upstream wins
-//      over a wildcard-default at equal priority, while a higher-priority
-//      default still beats a lower-priority non-default.
-//   3. If nothing matches and a default exists, return default.
-//   4. Otherwise return null (caller emits 503).
+//   1. Matrix match: enabled upstreams that have this model in upstream_models
+//      with enabled=1. Sort by upstream.priority DESC, then matrix.priority
+//      DESC (tiebreaker), then non-default before default.
+//   2. Pattern fallback: for upstreams whose matrix is empty, fall back to the
+//      legacy model_patterns glob match.
+//   3. Otherwise return the default upstream, or null.
 function resolveUpstream(model) {
   const enabled = getEnabled();
   if (enabled.length === 0) return null;
 
   if (model) {
-    const matches = enabled
-      .filter(u => modelPatternsMatch(u.model_patterns, model))
+    const matrixHits = enabled
+      .map(u => {
+        const row = (u.matrix || []).find(r => r.model_name === model && r.enabled);
+        return row ? { u, mp: row.priority } : null;
+      })
+      .filter(Boolean)
       .sort((a, b) => {
-        // Primary: higher priority wins (user's explicit control)
+        if (b.u.priority !== a.u.priority) return b.u.priority - a.u.priority;
+        if (b.mp !== a.mp) return b.mp - a.mp;
+        return a.u.is_default - b.u.is_default;
+      });
+    if (matrixHits.length > 0) return matrixHits[0].u;
+
+    const patternHits = enabled
+      .filter(u => (!u.matrix || u.matrix.length === 0) && modelPatternsMatch(u.model_patterns, model))
+      .sort((a, b) => {
         if (b.priority !== a.priority) return b.priority - a.priority;
-        // Tiebreaker: non-default before default
         return a.is_default - b.is_default;
       });
-    if (matches.length > 0) return matches[0];
+    if (patternHits.length > 0) return patternHits[0];
   }
 
   return enabled.find(u => u.is_default) || null;
