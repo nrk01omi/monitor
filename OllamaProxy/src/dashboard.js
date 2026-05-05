@@ -10,6 +10,7 @@ const upstreams = require('./upstreams');
 const health = require('./health');
 const benchmark = require('./benchmark');
 const ollamaAdmin = require('./ollama-admin');
+const tune = require('./tune');
 const monitorRoutes = require('./monitor/routes');
 const archiver = require('./archiver');
 
@@ -431,6 +432,71 @@ app.get('/api/upstreams/:id/ollama/tags', async (req, res) => {
 // D-7. GET /api/ollama/pulls  → cross-upstream view of in-flight pulls
 app.get('/api/ollama/pulls', (_req, res) => {
   res.json(ollamaAdmin.listActivePulls());
+});
+
+// ── Tune: probe-load / evict ────────────────────────────────────────────────
+// Used by Tester's "max num_ctx binary search". probe-load forces a 1-token
+// generate so Ollama loads the model with the requested options, then reads
+// /api/ps so the caller can compute offload_pct in a single round-trip.
+// evict drops a model (or all models) from VRAM via keep_alive:0. Generate
+// failures are returned as HTTP 200 + error so the caller can treat them as
+// "upper bound found" rather than dying on a 5xx.
+
+function requireTuneUpstream(req, res) {
+  const u = upstreams.getById(parseInt(req.params.id, 10));
+  if (!u) {
+    res.status(404).json({ error: 'upstream not found', code: 'UPSTREAM_NOT_FOUND' });
+    return null;
+  }
+  if (!u.enabled) {
+    res.status(409).json({
+      error: `upstream "${u.name}" is disabled`,
+      code:  'UPSTREAM_DISABLED',
+    });
+    return null;
+  }
+  if (u.protocol !== 'ollama') {
+    res.status(400).json({
+      error: 'tune endpoints require an ollama upstream',
+      code:  'PROTOCOL_NOT_OLLAMA',
+    });
+    return null;
+  }
+  if (u.status === 'error') {
+    res.status(502).json({
+      error: `upstream "${u.name}" is offline (${u.last_error || 'unreachable'})`,
+      code:  'UPSTREAM_OFFLINE',
+    });
+    return null;
+  }
+  return u;
+}
+
+function sendTuneResult(res, result) {
+  const status = result._httpStatus ?? 200;
+  // Strip the internal status flag before serialising.
+  const { _httpStatus, ...payload } = result; // eslint-disable-line no-unused-vars
+  res.status(status).json(payload);
+}
+
+app.post('/api/upstreams/:id/tune/probe-load', async (req, res) => {
+  const u = requireTuneUpstream(req, res); if (!u) return;
+  try {
+    const result = await tune.probeLoad(u, req.body || {});
+    sendTuneResult(res, result);
+  } catch (err) {
+    res.status(502).json({ error: err.message, code: 'MONITOR_ERROR' });
+  }
+});
+
+app.post('/api/upstreams/:id/tune/evict', async (req, res) => {
+  const u = requireTuneUpstream(req, res); if (!u) return;
+  try {
+    const result = await tune.evict(u, req.body || {});
+    sendTuneResult(res, result);
+  } catch (err) {
+    res.status(502).json({ error: err.message, code: 'MONITOR_ERROR' });
+  }
 });
 
 // ── External LLM benchmark ─────────────────────────────────────────────────
