@@ -296,9 +296,9 @@ app.put('/api/model-priorities', (req, res) => {
     }
   }
   try {
-    const updated = db.setModelPriorities(modelName, ranks);
+    const { updated, skipped } = db.setModelPriorities(modelName, ranks);
     upstreams.reload();
-    res.json({ updated, model_name: modelName });
+    res.json({ updated, skipped, model_name: modelName });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }

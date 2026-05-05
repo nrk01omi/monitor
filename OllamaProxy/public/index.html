@@ -368,7 +368,7 @@
 
   /* Upstream form modal */
   .modal-backdrop {
-    position: fixed; inset: 0; background: rgba(13,17,23,0.7);
+    position: fixed; inset: 0; background: rgba(13,17,23,0.92);
     display: none; align-items: center; justify-content: center; z-index: 200;
   }
   .modal-backdrop.show { display: flex; }
@@ -419,9 +419,13 @@
 
   /* Priority editor modal */
   .modal-card.wide { width: 920px; }
+  .priority-table-wrap {
+    max-height: 60vh; overflow: auto; border: 1px solid var(--border);
+    border-radius: var(--radius); background: var(--bg2);
+  }
   .priority-table {
     width: 100%; border-collapse: separate; border-spacing: 0;
-    font-size: 12px; margin-top: 8px;
+    font-size: 12px; margin-top: 0; background: var(--bg2);
   }
   .priority-table th, .priority-table td {
     border-bottom: 1px solid var(--border); padding: 5px 8px; text-align: center;
@@ -440,22 +444,26 @@
   .priority-table th.col-up .up-name { font-family: var(--mono); }
   .priority-table th.col-up.offline .up-name { color: var(--red); text-decoration: line-through; }
   .priority-table tbody tr:hover td { background: var(--bg); }
+  .priority-table tbody tr:hover td.col-model { background: var(--bg); }
   .priority-cell {
     cursor: pointer; user-select: none; min-width: 60px; min-height: 22px;
     border-radius: 3px; transition: background .12s;
+    background: var(--bg2);
   }
   .priority-cell.empty { color: var(--text2); }
-  .priority-cell.empty:hover { background: rgba(88,166,255,.1); }
+  .priority-cell.empty:hover { background: #1d2733; }
   .priority-cell.ranked {
-    background: rgba(88,166,255,.18); color: var(--accent); font-weight: 700;
+    background: #1f3551; color: var(--accent); font-weight: 700;
   }
-  .priority-cell.rank-1 { background: rgba(63,185,80,.22); color: var(--green); }
+  .priority-cell.rank-1 { background: #1f4a2c; color: var(--green); }
   .priority-cell.disabled {
-    cursor: not-allowed; color: var(--text2); opacity: .35;
+    cursor: not-allowed; color: var(--text2);
   }
-  .priority-table-wrap {
-    max-height: 60vh; overflow: auto; border: 1px solid var(--border);
-    border-radius: var(--radius);
+  .priority-cell.na {
+    background: var(--bg2); color: var(--text2); opacity: .35;
+  }
+  .priority-cell.offline {
+    background: rgba(248,81,73,.08); color: var(--text2);
   }
   .priority-legend {
     font-size: 11px; color: var(--text2); margin: 6px 0 8px;
@@ -1654,14 +1662,32 @@
 
     tbody.innerHTML = modelNames.map(model => {
       const cells = ups.map(u => {
-        const p = pr.rows[model][u.id] || 0;
+        // 'has' = upstream has registered this model in its matrix.
+        // Without registration, the cell is non-interactive and shows '—'.
+        const has = Object.prototype.hasOwnProperty.call(pr.rows[model], u.id);
         const offline = u.status === 'error';
-        const cls = offline ? 'priority-cell disabled'
-                            : p === 0 ? 'priority-cell empty'
-                            : p === 1 ? 'priority-cell ranked rank-1'
-                            : 'priority-cell ranked';
-        const label = p === 0 ? '—' : String(p);
-        return `<td><div class="${cls}" data-model="${escapeHtml(model)}" data-uid="${u.id}">${label}</div></td>`;
+        const p = has ? (pr.rows[model][u.id] || 0) : 0;
+
+        let cls, label;
+        if (!has) {
+          cls = 'priority-cell disabled na';
+          label = '—';
+        } else if (offline) {
+          cls = 'priority-cell disabled offline';
+          label = p >= 1 ? String(p) : '—';
+        } else if (p === 0) {
+          cls = 'priority-cell empty';
+          label = '—';
+        } else {
+          cls = p === 1 ? 'priority-cell ranked rank-1' : 'priority-cell ranked';
+          label = String(p);
+        }
+        const title = !has
+          ? `not registered on ${u.name}`
+          : offline
+            ? `${u.name} is offline — rank preserved but skipped at runtime`
+            : `${u.name}: rank ${p === 0 ? 'unset' : p}`;
+        return `<td><div class="${cls}" data-model="${escapeHtml(model)}" data-uid="${u.id}" title="${escapeHtml(title)}">${label}</div></td>`;
       }).join('');
       return `<tr><td class="col-model">${escapeHtml(model)}</td>${cells}</tr>`;
     }).join('');
@@ -1675,16 +1701,17 @@
     if (cell.classList.contains('disabled')) return;
     const model = cell.dataset.model;
     const uid = parseInt(cell.dataset.uid, 10);
+    if (!Object.prototype.hasOwnProperty.call(pr.rows[model], uid)) return;
     const cur = pr.rows[model][uid] || 0;
 
-    // Compute new ranks for this row
+    // Compute new ranks restricted to upstreams that already have this model.
+    // We never create new matrix rows from the priority editor; that's the
+    // job of "+ Add model" / "Fetch from upstream" on the per-upstream view.
     const row = { ...pr.rows[model] };
     if (cur === 0) {
-      // Assign next rank
       const max = Object.values(row).reduce((m, v) => Math.max(m, v || 0), 0);
       row[uid] = max + 1;
     } else {
-      // Clear, then compact remaining ranks (keep relative order)
       row[uid] = 0;
       const remaining = Object.entries(row)
         .filter(([, v]) => v >= 1)
@@ -1692,9 +1719,13 @@
       remaining.forEach(([id], i) => { row[id] = i + 1; });
     }
 
-    // Persist all upstreams in this row (only those that are enabled — we keep
-    // existing rows on offline upstreams as-is so rank survives a power blip).
-    const ranks = pr.upstreams.map(u => ({ upstream_id: u.id, priority: row[u.id] || 0 }));
+    // Only PUT for upstreams that are registered for this model. Sending an
+    // entry for an unregistered upstream would cause INSERT ... ON CONFLICT
+    // to create a fresh row, which is exactly what the user asked to prevent.
+    const ranks = Object.entries(row).map(([id, p]) => ({
+      upstream_id: parseInt(id, 10),
+      priority: p || 0,
+    }));
     pr.error.textContent = '';
     try {
       const r = await fetch('/api/model-priorities', {

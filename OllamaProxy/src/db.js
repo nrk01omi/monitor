@@ -455,29 +455,33 @@ function listAllUpstreamModels() {
 // Atomically set ranks for a single model across multiple upstreams.
 // `ranks` = [{ upstream_id, priority }, ...]. Rows not listed are untouched.
 // priority must be an integer >= 0; 0 means "excluded".
+// IMPORTANT: this is UPDATE-only — it never creates new (upstream_id,
+// model_name) rows. To register a model on an upstream, use POST
+// /api/upstreams/:id/models. Trying to rank a model on an upstream that
+// doesn't carry it is a no-op (counted in `skipped`).
 function setModelPriorities(modelName, ranks) {
-  if (!modelName || !Array.isArray(ranks)) return 0;
-  const upsert = db.prepare(`
-    INSERT INTO upstream_models (upstream_id, model_name, priority, enabled)
-    VALUES (?, ?, ?, 1)
-    ON CONFLICT(upstream_id, model_name) DO UPDATE SET priority = excluded.priority
+  if (!modelName || !Array.isArray(ranks)) return { updated: 0, skipped: 0 };
+  const update = db.prepare(`
+    UPDATE upstream_models
+    SET priority = ?
+    WHERE upstream_id = ? AND model_name = ?
   `);
-  let n = 0;
+  let updated = 0, skipped = 0;
   db.exec('BEGIN');
   try {
     for (const r of ranks) {
       const uid = parseInt(r.upstream_id, 10);
       const p   = parseInt(r.priority, 10);
-      if (!Number.isInteger(uid) || !Number.isInteger(p) || p < 0) continue;
-      upsert.run(uid, modelName, p);
-      n++;
+      if (!Number.isInteger(uid) || !Number.isInteger(p) || p < 0) { skipped++; continue; }
+      const res = update.run(p, uid, modelName);
+      if (res.changes > 0) updated++; else skipped++;
     }
     db.exec('COMMIT');
   } catch (err) {
     db.exec('ROLLBACK');
     throw err;
   }
-  return n;
+  return { updated, skipped };
 }
 
 function getUpstreamModel(upstreamId, modelName) {
