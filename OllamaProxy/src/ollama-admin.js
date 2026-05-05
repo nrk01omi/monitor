@@ -42,12 +42,16 @@ async function pull({ upstream, model, clientReq, clientRes }) {
 
   // If the client disconnects mid-stream, propagate the abort to upstream so
   // the Ollama side can stop pulling layers it no longer needs to deliver.
+  // NOTE: must use clientRes.on('close'), NOT clientReq.on('close') — the
+  // latter fires when the request body stream finishes (after express.json()
+  // parses it), which would abort the upstream fetch immediately and cause an
+  // empty 200 / Content-Length: 0 response.
   const onClose = () => {
     if (!clientRes.writableEnded) {
       try { controller.abort(); } catch { /* ignore */ }
     }
   };
-  clientReq.on('close', onClose);
+  clientRes.on('close', onClose);
 
   try {
     const upstreamRes = await fetch(`${trimUrl(upstream.url)}/api/pull`, {
@@ -112,7 +116,7 @@ async function pull({ upstream, model, clientReq, clientRes }) {
       clientRes.end();
     }
   } finally {
-    clientReq.off('close', onClose);
+    clientRes.off('close', onClose);
     activePulls.delete(key);
   }
 }
