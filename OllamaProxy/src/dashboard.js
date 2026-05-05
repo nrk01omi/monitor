@@ -9,6 +9,7 @@ const config = require('./config');
 const upstreams = require('./upstreams');
 const health = require('./health');
 const benchmark = require('./benchmark');
+const ollamaAdmin = require('./ollama-admin');
 const monitorRoutes = require('./monitor/routes');
 const archiver = require('./archiver');
 
@@ -304,19 +305,165 @@ app.put('/api/model-priorities', (req, res) => {
   }
 });
 
+// ── Ollama admin (pull / delete / copy / show / ps / tags) ─────────────────
+// Lets Tester drive model lifecycle on a registered Ollama upstream. OpenAI
+// upstreams are out of scope and answered with PROTOCOL_UNSUPPORTED. None of
+// these calls hit the `requests` log (NFR-5: management traffic, not metered).
+
+function requireOllamaUpstream(req, res) {
+  const u = upstreams.getById(parseInt(req.params.id, 10));
+  if (!u) {
+    res.status(404).json({ error: 'upstream not found' });
+    return null;
+  }
+  if (u.protocol !== 'ollama') {
+    res.status(400).json({
+      error: 'ollama-only operation; this upstream uses openai protocol',
+      code:  'PROTOCOL_UNSUPPORTED',
+    });
+    return null;
+  }
+  return u;
+}
+
+// D-1. POST /api/upstreams/:id/ollama/pull  → NDJSON stream of layer progress
+app.post('/api/upstreams/:id/ollama/pull', async (req, res) => {
+  const u = requireOllamaUpstream(req, res); if (!u) return;
+  const model = (req.body || {}).model;
+  if (!model || typeof model !== 'string') {
+    return res.status(400).json({ error: 'model is required' });
+  }
+  await ollamaAdmin.pull({ upstream: u, model, clientReq: req, clientRes: res });
+});
+
+// D-2. DELETE /api/upstreams/:id/ollama/model  → delete model on upstream
+//      (matrix row is intentionally preserved; mirrors health probe policy)
+app.delete('/api/upstreams/:id/ollama/model', async (req, res) => {
+  const u = requireOllamaUpstream(req, res); if (!u) return;
+  const model = (req.body || {}).model;
+  if (!model || typeof model !== 'string') {
+    return res.status(400).json({ error: 'model is required' });
+  }
+  try {
+    const r = await ollamaAdmin.passthroughJson({
+      upstream: u, opPath: '/api/delete', method: 'DELETE', body: { name: model },
+    });
+    if (r.status >= 200 && r.status < 300) {
+      res.status(200).json(r.payload ?? { ok: true });
+    } else {
+      res.status(r.status).json(r.payload ?? { error: `upstream returned ${r.status}` });
+    }
+  } catch (err) {
+    res.status(502).json({ error: err.message, code: 'UPSTREAM_ERROR' });
+  }
+});
+
+// D-3. POST /api/upstreams/:id/ollama/copy  → duplicate a model on upstream
+app.post('/api/upstreams/:id/ollama/copy', async (req, res) => {
+  const u = requireOllamaUpstream(req, res); if (!u) return;
+  const { source, destination } = req.body || {};
+  if (!source || !destination) {
+    return res.status(400).json({ error: 'source and destination are required' });
+  }
+  try {
+    const r = await ollamaAdmin.passthroughJson({
+      upstream: u, opPath: '/api/copy', body: { source, destination },
+    });
+    if (r.status >= 200 && r.status < 300) {
+      try {
+        db.upsertUpstreamModel(u.id, destination, { priority: 0, enabled: 1 });
+        upstreams.reload();
+      } catch (e) {
+        console.error('[OllamaAdmin] copy upsert failed:', e.message);
+      }
+      res.status(200).json(r.payload ?? { ok: true });
+    } else {
+      res.status(r.status).json(r.payload ?? { error: `upstream returned ${r.status}` });
+    }
+  } catch (err) {
+    res.status(502).json({ error: err.message, code: 'UPSTREAM_ERROR' });
+  }
+});
+
+// D-4. POST /api/upstreams/:id/ollama/show  → model details (ctx, params, ...)
+app.post('/api/upstreams/:id/ollama/show', async (req, res) => {
+  const u = requireOllamaUpstream(req, res); if (!u) return;
+  const model = (req.body || {}).model;
+  if (!model || typeof model !== 'string') {
+    return res.status(400).json({ error: 'model is required' });
+  }
+  try {
+    const r = await ollamaAdmin.passthroughJson({
+      upstream: u, opPath: '/api/show', body: { name: model },
+    });
+    res.status(r.status).json(r.payload);
+  } catch (err) {
+    res.status(502).json({ error: err.message, code: 'UPSTREAM_ERROR' });
+  }
+});
+
+// D-5. GET /api/upstreams/:id/ollama/ps  → currently-loaded models on upstream
+app.get('/api/upstreams/:id/ollama/ps', async (req, res) => {
+  const u = requireOllamaUpstream(req, res); if (!u) return;
+  try {
+    const r = await ollamaAdmin.passthroughJson({
+      upstream: u, opPath: '/api/ps', method: 'GET',
+    });
+    res.status(r.status).json(r.payload);
+  } catch (err) {
+    res.status(502).json({ error: err.message, code: 'UPSTREAM_ERROR' });
+  }
+});
+
+// D-6. GET /api/upstreams/:id/ollama/tags  → immediate /api/tags refresh
+app.get('/api/upstreams/:id/ollama/tags', async (req, res) => {
+  const u = requireOllamaUpstream(req, res); if (!u) return;
+  try {
+    const r = await ollamaAdmin.passthroughJson({
+      upstream: u, opPath: '/api/tags', method: 'GET',
+    });
+    res.status(r.status).json(r.payload);
+  } catch (err) {
+    res.status(502).json({ error: err.message, code: 'UPSTREAM_ERROR' });
+  }
+});
+
+// D-7. GET /api/ollama/pulls  → cross-upstream view of in-flight pulls
+app.get('/api/ollama/pulls', (_req, res) => {
+  res.json(ollamaAdmin.listActivePulls());
+});
+
 // ── External LLM benchmark ─────────────────────────────────────────────────
 // POST /api/benchmark
-// Body: { upstream_id, model, runs?, prompt?, timeout_ms? }
+// Body: { upstream_id, model, runs?, prompt?, timeout_ms?,
+//         options?, system?, thinking?, reasoning_effort?, record_options? }
 // Limited to registered upstreams (SSRF mitigation, see NFR-4).
 app.post('/api/benchmark', async (req, res) => {
   const body = req.body || {};
+  if (body.thinking != null && !['auto', 'on', 'off'].includes(body.thinking)) {
+    return res.status(400).json({ error: "thinking must be 'auto'|'on'|'off'" });
+  }
+  if (body.reasoning_effort != null && !['low', 'medium', 'high'].includes(body.reasoning_effort)) {
+    return res.status(400).json({ error: "reasoning_effort must be 'low'|'medium'|'high'" });
+  }
+  if (body.options !== undefined && (body.options === null || typeof body.options !== 'object' || Array.isArray(body.options))) {
+    return res.status(400).json({ error: 'options must be an object' });
+  }
+  if (body.system !== undefined && typeof body.system !== 'string') {
+    return res.status(400).json({ error: 'system must be a string' });
+  }
   try {
     const result = await benchmark.run({
-      upstream_id: Number.isInteger(body.upstream_id) ? body.upstream_id : parseInt(body.upstream_id, 10),
-      model:       body.model,
-      runs:        body.runs,
-      prompt:      body.prompt,
-      timeout_ms:  body.timeout_ms,
+      upstream_id:      Number.isInteger(body.upstream_id) ? body.upstream_id : parseInt(body.upstream_id, 10),
+      model:            body.model,
+      runs:             body.runs,
+      prompt:           body.prompt,
+      timeout_ms:       body.timeout_ms,
+      options:          body.options,
+      system:           body.system,
+      thinking:         body.thinking,
+      reasoning_effort: body.reasoning_effort,
+      record_options:   !!body.record_options,
     });
     res.json(result);
   } catch (e) {
