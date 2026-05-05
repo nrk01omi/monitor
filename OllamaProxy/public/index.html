@@ -416,6 +416,55 @@
   .bench-result .bm-row { display: grid; grid-template-columns: 110px repeat(4, 1fr); gap: 4px 8px; }
   .bench-result .bm-row .bm-lbl { color: var(--text2); }
   .bench-result h4 { font-size: 11px; text-transform: uppercase; color: var(--text2); margin-bottom: 4px; letter-spacing: .4px; }
+
+  /* Priority editor modal */
+  .modal-card.wide { width: 920px; }
+  .priority-table {
+    width: 100%; border-collapse: separate; border-spacing: 0;
+    font-size: 12px; margin-top: 8px;
+  }
+  .priority-table th, .priority-table td {
+    border-bottom: 1px solid var(--border); padding: 5px 8px; text-align: center;
+    background: var(--bg2);
+  }
+  .priority-table th {
+    color: var(--text2); font-weight: 600; font-size: 11px;
+    position: sticky; top: 0; z-index: 1; background: var(--bg2);
+  }
+  .priority-table th.col-model, .priority-table td.col-model {
+    text-align: left; font-family: var(--mono); white-space: nowrap;
+    position: sticky; left: 0; background: var(--bg2); z-index: 2;
+  }
+  .priority-table th.col-model { z-index: 3; }
+  .priority-table th.col-up { min-width: 100px; }
+  .priority-table th.col-up .up-name { font-family: var(--mono); }
+  .priority-table th.col-up.offline .up-name { color: var(--red); text-decoration: line-through; }
+  .priority-table tbody tr:hover td { background: var(--bg); }
+  .priority-cell {
+    cursor: pointer; user-select: none; min-width: 60px; min-height: 22px;
+    border-radius: 3px; transition: background .12s;
+  }
+  .priority-cell.empty { color: var(--text2); }
+  .priority-cell.empty:hover { background: rgba(88,166,255,.1); }
+  .priority-cell.ranked {
+    background: rgba(88,166,255,.18); color: var(--accent); font-weight: 700;
+  }
+  .priority-cell.rank-1 { background: rgba(63,185,80,.22); color: var(--green); }
+  .priority-cell.disabled {
+    cursor: not-allowed; color: var(--text2); opacity: .35;
+  }
+  .priority-table-wrap {
+    max-height: 60vh; overflow: auto; border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+  .priority-legend {
+    font-size: 11px; color: var(--text2); margin: 6px 0 8px;
+    display: flex; gap: 14px; flex-wrap: wrap;
+  }
+  .priority-legend .key {
+    display: inline-block; min-width: 22px; padding: 1px 6px; border-radius: 3px;
+    text-align: center; font-weight: 700; margin-right: 4px;
+  }
 </style>
 </head>
 <body>
@@ -549,9 +598,12 @@
     </div>
 
     <div class="drawer-section">
-      <h3 style="display:flex; align-items:center; justify-content:space-between;">
+      <h3 style="display:flex; align-items:center; justify-content:space-between; gap: 6px;">
         <span>Upstreams</span>
-        <button class="btn btn-primary" id="btnAddUpstream" style="font-size:12px; padding:4px 10px;">+ Add upstream</button>
+        <span style="display:flex; gap:6px;">
+          <button class="btn" id="btnEditPriorities" style="font-size:12px; padding:4px 10px;">Priorities</button>
+          <button class="btn btn-primary" id="btnAddUpstream" style="font-size:12px; padding:4px 10px;">+ Add upstream</button>
+        </span>
       </h3>
       <div id="upstreamList"></div>
     </div>
@@ -564,6 +616,31 @@
   <div class="spinner"></div>
   <div id="restartText" style="font-size:14px;">Restarting…</div>
   <div id="restartHint" style="font-size:12px; color: var(--text2);"></div>
+</div>
+
+<!-- Priority editor modal -->
+<div class="modal-backdrop" id="priorityModal">
+  <div class="modal-card wide" role="dialog" aria-modal="true" aria-labelledby="priorityModalTitle">
+    <h2 id="priorityModalTitle">Model priorities</h2>
+    <div class="priority-legend">
+      Click a cell to assign the next rank for that model row.
+      Click a ranked cell again to clear it (remaining ranks compact automatically).
+      <div><span class="key" style="background:rgba(63,185,80,.22); color:var(--green);">1</span>highest priority</div>
+      <div><span class="key" style="background:rgba(88,166,255,.18); color:var(--accent);">2+</span>fallback order</div>
+      <div><span class="key" style="color:var(--text2);">—</span>excluded (priority 0)</div>
+      <div><span class="key" style="color:var(--red); text-decoration:line-through;">offline</span>upstream skipped at runtime</div>
+    </div>
+    <div class="priority-table-wrap">
+      <table class="priority-table" id="priorityTable">
+        <thead><tr></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="form-error" id="priorityError"></div>
+    <div class="modal-actions">
+      <button class="btn" id="prCloseBtn" type="button">Close</button>
+    </div>
+  </div>
 </div>
 
 <!-- Upstream form modal (Add / Edit) -->
@@ -1221,8 +1298,7 @@
       <thead>
         <tr>
           <th>Model</th>
-          <th style="width:80px;">Priority</th>
-          <th style="width:60px;">Enabled</th>
+          <th style="width:80px;">Rank</th>
           <th></th>
         </tr>
       </thead>
@@ -1230,7 +1306,7 @@
     `;
     const tbody = table.querySelector('tbody');
     if (rows.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="4" style="color:var(--text2); text-align:center; padding:8px;">No models registered yet — they auto-populate after the next health probe, or add them manually below.</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="3" style="color:var(--text2); text-align:center; padding:8px;">No models registered yet — they auto-populate after the next health probe, or add them manually below.</td></tr>`;
     }
     for (const row of rows) {
       tbody.appendChild(renderMatrixRow(u, row));
@@ -1290,32 +1366,17 @@
 
   function renderMatrixRow(u, row) {
     const tr = document.createElement('tr');
+    const rankBadge = row.priority >= 1
+      ? `<span style="color: var(--accent); font-weight: 600;">${row.priority}</span>`
+      : `<span style="color: var(--text2);">—</span>`;
     tr.innerHTML = `
       <td class="col-name">${escapeHtml(row.model_name)}</td>
-      <td><input type="number" value="${row.priority}" data-field="priority"></td>
-      <td><input type="checkbox" data-field="enabled" ${row.enabled ? 'checked' : ''}></td>
+      <td>${rankBadge}</td>
       <td class="row-actions">
         <button class="btn" data-act="bench">Bench</button>
         <button class="btn btn-danger" data-act="delete">×</button>
       </td>
     `;
-    const prInput = tr.querySelector('input[data-field="priority"]');
-    const enInput = tr.querySelector('input[data-field="enabled"]');
-    const save = async () => {
-      try {
-        const r = await fetch(`/api/upstreams/${u.id}/models/${encodeURIComponent(row.model_name)}`, {
-          method: 'PUT',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            priority: parseInt(prInput.value, 10) || 0,
-            enabled: enInput.checked,
-          }),
-        });
-        if (!r.ok) throw new Error((await r.json()).error || `HTTP ${r.status}`);
-      } catch (e) { alert(e.message); }
-    };
-    prInput.addEventListener('change', save);
-    enInput.addEventListener('change', save);
 
     tr.querySelector('[data-act=delete]').addEventListener('click', async () => {
       if (!confirm(`Remove ${row.model_name} from this upstream?`)) return;
@@ -1530,6 +1591,124 @@
   }
 
   $('btnAddUpstream').addEventListener('click', () => openUpstreamModal());
+
+  // ── Priority editor modal ──
+  const pr = {
+    backdrop: $('priorityModal'),
+    table:    $('priorityTable'),
+    error:    $('priorityError'),
+    close:    $('prCloseBtn'),
+    upstreams: [],   // [{ id, name, status }, ...]
+    rows: {},        // { model_name: { [upstream_id]: priority } }
+  };
+
+  pr.close.addEventListener('click', () => pr.backdrop.classList.remove('show'));
+  pr.backdrop.addEventListener('click', e => {
+    if (e.target === pr.backdrop) pr.backdrop.classList.remove('show');
+  });
+
+  $('btnEditPriorities').addEventListener('click', openPriorityModal);
+
+  async function openPriorityModal() {
+    pr.error.textContent = '';
+    pr.backdrop.classList.add('show');
+    try {
+      const [ups, rows] = await Promise.all([
+        fetchJSON('/api/upstreams'),
+        fetchJSON('/api/upstream-models'),
+      ]);
+      pr.upstreams = ups
+        .filter(u => u.enabled)
+        .map(u => ({ id: u.id, name: u.name, status: (u.status || 'unknown').toLowerCase() }));
+      pr.rows = {};
+      for (const r of rows) {
+        if (!pr.rows[r.model_name]) pr.rows[r.model_name] = {};
+        pr.rows[r.model_name][r.upstream_id] = r.priority || 0;
+      }
+      renderPriorityTable();
+    } catch (e) {
+      pr.error.textContent = e.message;
+    }
+  }
+
+  function renderPriorityTable() {
+    const thead = pr.table.querySelector('thead tr');
+    const tbody = pr.table.querySelector('tbody');
+    const ups = pr.upstreams;
+
+    thead.innerHTML =
+      `<th class="col-model">Model</th>` +
+      ups.map(u => {
+        const offlineCls = u.status === 'error' ? 'offline' : '';
+        return `<th class="col-up ${offlineCls}">
+          <div class="up-name">${escapeHtml(u.name)}</div>
+          <div style="font-size:10px; color:var(--text2);">${escapeHtml(u.status)}</div>
+        </th>`;
+      }).join('');
+
+    const modelNames = Object.keys(pr.rows).sort((a, b) => a.localeCompare(b));
+    if (modelNames.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="${ups.length + 1}" style="color:var(--text2); padding:14px; text-align:center;">No models registered. Probe upstreams first.</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = modelNames.map(model => {
+      const cells = ups.map(u => {
+        const p = pr.rows[model][u.id] || 0;
+        const offline = u.status === 'error';
+        const cls = offline ? 'priority-cell disabled'
+                            : p === 0 ? 'priority-cell empty'
+                            : p === 1 ? 'priority-cell ranked rank-1'
+                            : 'priority-cell ranked';
+        const label = p === 0 ? '—' : String(p);
+        return `<td><div class="${cls}" data-model="${escapeHtml(model)}" data-uid="${u.id}">${label}</div></td>`;
+      }).join('');
+      return `<tr><td class="col-model">${escapeHtml(model)}</td>${cells}</tr>`;
+    }).join('');
+
+    tbody.querySelectorAll('.priority-cell').forEach(cell => {
+      cell.addEventListener('click', () => onPriorityCellClick(cell));
+    });
+  }
+
+  async function onPriorityCellClick(cell) {
+    if (cell.classList.contains('disabled')) return;
+    const model = cell.dataset.model;
+    const uid = parseInt(cell.dataset.uid, 10);
+    const cur = pr.rows[model][uid] || 0;
+
+    // Compute new ranks for this row
+    const row = { ...pr.rows[model] };
+    if (cur === 0) {
+      // Assign next rank
+      const max = Object.values(row).reduce((m, v) => Math.max(m, v || 0), 0);
+      row[uid] = max + 1;
+    } else {
+      // Clear, then compact remaining ranks (keep relative order)
+      row[uid] = 0;
+      const remaining = Object.entries(row)
+        .filter(([, v]) => v >= 1)
+        .sort((a, b) => a[1] - b[1]);
+      remaining.forEach(([id], i) => { row[id] = i + 1; });
+    }
+
+    // Persist all upstreams in this row (only those that are enabled — we keep
+    // existing rows on offline upstreams as-is so rank survives a power blip).
+    const ranks = pr.upstreams.map(u => ({ upstream_id: u.id, priority: row[u.id] || 0 }));
+    pr.error.textContent = '';
+    try {
+      const r = await fetch('/api/model-priorities', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model_name: model, ranks }),
+      });
+      if (!r.ok) throw new Error((await r.json()).error || `HTTP ${r.status}`);
+      pr.rows[model] = row;
+      renderPriorityTable();
+    } catch (e) {
+      pr.error.textContent = e.message;
+    }
+  }
 
   $('btnSaveSettings').addEventListener('click', async () => {
     const proxy_port            = parseInt($('setProxyPort').value, 10);

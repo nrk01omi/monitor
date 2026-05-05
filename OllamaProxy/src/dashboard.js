@@ -266,6 +266,44 @@ app.delete('/api/upstreams/:id/models/:model_name', (req, res) => {
   }
 });
 
+// Cross-tab grid for the priority editor: returns every matrix row across all
+// upstreams. The frontend pivots this into rows=model_name, cols=upstream_id.
+app.get('/api/upstream-models', (_req, res) => {
+  try {
+    const rows = db.listAllUpstreamModels().map(r => ({ ...r, enabled: !!r.enabled }));
+    res.json(rows);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Atomically set priority ranks for a single model across multiple upstreams.
+// Body: { model_name: string, ranks: [{ upstream_id, priority }, ...] }
+// priority semantics: 1 = best, 2 = next, ..., 0 = excluded.
+app.put('/api/model-priorities', (req, res) => {
+  const body = req.body || {};
+  const modelName = body.model_name;
+  const ranks = body.ranks;
+  if (!modelName || typeof modelName !== 'string') {
+    return res.status(400).json({ error: 'model_name required' });
+  }
+  if (!Array.isArray(ranks)) {
+    return res.status(400).json({ error: 'ranks must be an array' });
+  }
+  for (const r of ranks) {
+    if (!Number.isInteger(r?.upstream_id) || !Number.isInteger(r?.priority) || r.priority < 0) {
+      return res.status(400).json({ error: 'each rank requires integer upstream_id and priority >= 0' });
+    }
+  }
+  try {
+    const updated = db.setModelPriorities(modelName, ranks);
+    upstreams.reload();
+    res.json({ updated, model_name: modelName });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
 // ── External LLM benchmark ─────────────────────────────────────────────────
 // POST /api/benchmark
 // Body: { upstream_id, model, runs?, prompt?, timeout_ms? }

@@ -124,6 +124,16 @@ async function run({ upstream_id, model, runs, prompt, timeout_ms }) {
   if (!upstream) {
     const e = new Error(`unknown upstream_id ${upstream_id}`); e.status = 404; throw e;
   }
+  if (!upstream.enabled) {
+    const e = new Error(`upstream "${upstream.name}" is disabled`); e.status = 409; throw e;
+  }
+  // Explicit upstream+model API ignores priority but still rejects unreachable
+  // targets up front so the caller gets a clear error instead of a generic
+  // ECONNREFUSED storm.
+  if (upstream.status === 'error') {
+    const e = new Error(`upstream "${upstream.name}" is offline (${upstream.last_error || 'unreachable'})`);
+    e.status = 502; throw e;
+  }
 
   const results = [];
   for (let i = 0; i < n; i++) {

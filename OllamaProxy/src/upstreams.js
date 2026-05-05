@@ -76,33 +76,47 @@ function getById(id) {
   return cache.find(u => u.id === id) || null;
 }
 
+function isReachable(u) {
+  // Treat 'error' as unreachable so we skip it. 'unknown' (pre-first-probe)
+  // and 'ok' both pass through. Once a probe lands, status flips accordingly.
+  return u.status !== 'error';
+}
+
 // Routing rules:
-//   1. Matrix match: enabled upstreams that have this model in upstream_models
-//      with enabled=1. Sort by upstream.priority DESC, then matrix.priority
-//      DESC (tiebreaker), then non-default before default.
-//   2. Pattern fallback: for upstreams whose matrix is empty, fall back to the
-//      legacy model_patterns glob match.
-//   3. Otherwise return the default upstream, or null.
+//   1. Matrix match: enabled, reachable upstreams that have this model in
+//      upstream_models with priority >= 1. Smaller priority wins (1 = best).
+//      Tiebreaker: higher upstream.priority, then non-default before default.
+//   2. Pattern fallback: for upstreams that are reachable AND have no matrix
+//      entry with priority >= 1 for any model, fall back to legacy
+//      model_patterns glob match. (priority=0 entries don't count as "ranked".)
+//   3. Otherwise return the default upstream — only if reachable.
 function resolveUpstream(model) {
   const enabled = getEnabled();
   if (enabled.length === 0) return null;
 
   if (model) {
     const matrixHits = enabled
+      .filter(isReachable)
       .map(u => {
-        const row = (u.matrix || []).find(r => r.model_name === model && r.enabled);
+        const row = (u.matrix || []).find(
+          r => r.model_name === model && r.enabled && r.priority >= 1
+        );
         return row ? { u, mp: row.priority } : null;
       })
       .filter(Boolean)
       .sort((a, b) => {
+        if (a.mp !== b.mp) return a.mp - b.mp;                   // 1 wins over 2
         if (b.u.priority !== a.u.priority) return b.u.priority - a.u.priority;
-        if (b.mp !== a.mp) return b.mp - a.mp;
         return a.u.is_default - b.u.is_default;
       });
     if (matrixHits.length > 0) return matrixHits[0].u;
 
     const patternHits = enabled
-      .filter(u => (!u.matrix || u.matrix.length === 0) && modelPatternsMatch(u.model_patterns, model))
+      .filter(isReachable)
+      .filter(u => {
+        const hasRanked = (u.matrix || []).some(r => r.priority >= 1 && r.enabled);
+        return !hasRanked && modelPatternsMatch(u.model_patterns, model);
+      })
       .sort((a, b) => {
         if (b.priority !== a.priority) return b.priority - a.priority;
         return a.is_default - b.is_default;
@@ -110,7 +124,8 @@ function resolveUpstream(model) {
     if (patternHits.length > 0) return patternHits[0];
   }
 
-  return enabled.find(u => u.is_default) || null;
+  const defaultUp = enabled.find(u => u.is_default);
+  return (defaultUp && isReachable(defaultUp)) ? defaultUp : null;
 }
 
 seedIfEmpty();
