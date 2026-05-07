@@ -14,6 +14,133 @@ const app = express();
 // sniff for raw Ollama (no wrapper headers) won't see X-Powered-By: Express.
 app.disable('x-powered-by');
 
+// /api/transcribe はファイルアップロード（音声/動画は数百MB〜数GBになり得る）。
+// ここで body を全部バッファすると OOM するので、express.raw の前に置いて
+// req を読まずに上流(whisper-server)へ stream pass-through する。
+// 対象は POST のみ。GET など他メソッドは下の通常ルートに落とす。
+app.post('/api/transcribe', async (req, res) => {
+  const startTime = Date.now();
+  const whisperUrl = config.get('whisper_url');
+
+  console.log(`[Proxy]     POST /api/transcribe → ${whisperUrl} (stream)`);
+
+  let recordId;
+  try {
+    recordId = insertRequest({
+      method: 'POST',
+      path: '/api/transcribe',
+      request_headers: JSON.stringify(req.headers),
+      request_body: '<binary upload>',  // 大きすぎてDBに入れない
+      model: null,
+      is_streaming: 0,
+    });
+  } catch (err) {
+    console.error('[Proxy]     insertRequest failed for /api/transcribe:', err);
+    recordId = null;
+  }
+
+  let finalized = false;
+  function finalize(fields) {
+    if (finalized) return;
+    finalized = true;
+    if (recordId == null) {
+      const tag = fields.error ? `error="${fields.error}"` : `status=${fields.response_status}`;
+      console.log(`[Proxy]     #-  /api/transcribe done ${tag} ${Date.now() - startTime}ms`);
+      return;
+    }
+    try {
+      updateRequest({
+        id: recordId,
+        response_status:  fields.response_status  ?? null,
+        response_headers: fields.response_headers ?? null,
+        response_body:    fields.response_body    ?? null,
+        duration_ms:      Date.now() - startTime,
+        error:            fields.error            ?? null,
+        upstream_name:    '<whisper>',
+      });
+    } catch (err) {
+      console.error(`[Proxy]     #${recordId} finalize() failed:`, err);
+    }
+    const tag = fields.error ? `error="${fields.error}"` : `status=${fields.response_status}`;
+    console.log(`[Proxy]     #${recordId} /api/transcribe done ${tag} upstream=<whisper> ${Date.now() - startTime}ms`);
+  }
+
+  if (!whisperUrl) {
+    const message = 'whisper_url not configured';
+    res.status(503).json({ error: message });
+    finalize({ response_status: 503, error: message });
+    return;
+  }
+
+  const abort = new AbortController();
+  res.on('close', () => {
+    if (!finalized && !res.writableEnded) {
+      abort.abort();
+      finalize({ response_status: 499, error: 'client closed connection' });
+    }
+  });
+
+  try {
+    const forwardHeaders = { ...req.headers };
+    delete forwardHeaders['host'];
+    // content-length はそのまま渡す（multipart の終端判定に必要）。axios が再計算するのは
+    // body をオブジェクトで渡したときのみで、stream 渡しのときは保持される。
+
+    const response = await axios({
+      method: 'POST',
+      url: `${whisperUrl}/api/transcribe`,
+      headers: forwardHeaders,
+      data: req,                    // ← Readable stream のまま渡す
+      responseType: 'stream',
+      timeout: 30 * 60 * 1000,      // 30分。長尺動画の書き起こし考慮
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity,
+      signal: abort.signal,
+    });
+
+    res.status(response.status);
+    const responseHeaders = {};
+    for (const [k, v] of Object.entries(response.headers)) {
+      if (k.toLowerCase() === 'transfer-encoding') continue;
+      res.setHeader(k, v);
+      responseHeaders[k] = v;
+    }
+
+    const chunks = [];
+    response.data.on('data', (chunk) => {
+      chunks.push(chunk);
+      try { res.write(chunk); } catch { /* handled by close */ }
+    });
+    response.data.on('end', () => {
+      try { res.end(); } catch { /* ignore */ }
+      finalize({
+        response_status: response.status,
+        response_headers: JSON.stringify(responseHeaders),
+        response_body: Buffer.concat(chunks).toString('utf8'),
+        error: null,
+      });
+    });
+    response.data.on('error', (err) => {
+      try { res.end(); } catch { /* ignore */ }
+      finalize({
+        response_status: response.status,
+        response_headers: JSON.stringify(responseHeaders),
+        response_body: chunks.length ? Buffer.concat(chunks).toString('utf8') : null,
+        error: err.message,
+      });
+    });
+  } catch (err) {
+    const status = err.response?.status || 502;
+    const message = err.response?.status
+      ? err.message
+      : `whisper-server connection failed: ${err.message}`;
+    if (!res.headersSent) {
+      try { res.status(status).json({ error: message }); } catch { /* ignore */ }
+    }
+    finalize({ response_status: status, error: message });
+  }
+});
+
 // Capture raw body for all content types
 app.use(express.raw({ type: '*/*', limit: '100mb' }));
 

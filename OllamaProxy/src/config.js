@@ -16,6 +16,7 @@ const DEFAULTS = {
   archive_enabled: 1,                 // boolean stored as 0/1 to fit TEXT settings table
   archive_retention_days: 30,
   archive_hour_jst: 3,                // 0..23
+  whisper_url: 'http://whisper-server:11436',
 };
 
 const ENV_KEYS = {
@@ -25,6 +26,7 @@ const ENV_KEYS = {
   archive_enabled: 'ARCHIVE_ENABLED',
   archive_retention_days: 'ARCHIVE_RETENTION_DAYS',
   archive_hour_jst: 'ARCHIVE_HOUR_JST',
+  whisper_url: 'WHISPER_URL',
 };
 
 const COERCE = {
@@ -34,6 +36,7 @@ const COERCE = {
   archive_enabled: v => (v === '1' || v === 1 || v === true || v === 'true') ? 1 : 0,
   archive_retention_days: v => parseInt(v, 10),
   archive_hour_jst: v => parseInt(v, 10),
+  whisper_url: v => String(v),
 };
 
 const emitter = new EventEmitter();
