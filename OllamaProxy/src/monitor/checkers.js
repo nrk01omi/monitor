@@ -5,7 +5,7 @@
 //   { id, status: 'up'|'degraded'|'down', latency_ms, detail, error }
 // The poller just stores whatever comes back and never throws.
 
-const axios = require('axios');
+const axios = require('../http-client');
 const net = require('node:net');
 
 function portainerEnv() {

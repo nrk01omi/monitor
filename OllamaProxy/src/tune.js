@@ -13,7 +13,7 @@
 // untouched. Calls are not written to the `requests` log (NFR-2: this is
 // management traffic, not metered).
 
-const axios = require('axios');
+const axios = require('./http-client');
 
 const DEFAULT_KEEP_ALIVE = '5m';
 const DEFAULT_NUM_GPU = -1;

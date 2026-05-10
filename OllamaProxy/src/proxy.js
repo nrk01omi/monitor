@@ -2,6 +2,11 @@
 
 const express = require('express');
 const axios = require('axios');
+// httpClient is the keepAlive:false axios instance used for short-lived
+// management calls (e.g. /api/tags aggregation). The default axios above is
+// kept for the streaming hot path (upstream forward) where keepAlive must
+// stay on for performance.
+const httpClient = require('./http-client');
 const { insertRequest, updateRequest } = require('./db');
 const config = require('./config');
 const upstreams = require('./upstreams');
@@ -54,7 +59,7 @@ async function handleAggregatedModels(req, res, finalize) {
     targets.map(async u => {
       const proto = u.protocol || 'ollama';
       const path = PROTO_LIST_PATH[proto] || '/api/tags';
-      const r = await axios.get(`${u.url}${path}`, { timeout: 5000 });
+      const r = await httpClient.get(`${u.url}${path}`, { timeout: 5000 });
       const names = (PROTO_EXTRACT[proto] || PROTO_EXTRACT.ollama)(r.data);
       return { upstream: u, names };
     })

@@ -8,7 +8,7 @@
 // - Triggers an immediate poll on every restart so newly-added upstreams light up
 //   without waiting for the next tick.
 
-const axios = require('axios');
+const axios = require('./http-client');
 const db = require('./db');
 const config = require('./config');
 const upstreams = require('./upstreams');

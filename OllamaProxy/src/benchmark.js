@@ -18,7 +18,7 @@
 //   record_options   — when true the response includes the actual upstream
 //                      request body for debugging.
 
-const axios = require('axios');
+const axios = require('./http-client');
 const upstreams = require('./upstreams');
 
 const DEFAULT_PROMPT = 'Say hello in one short sentence.';
