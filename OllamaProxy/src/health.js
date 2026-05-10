@@ -99,8 +99,14 @@ async function probeModelsAdHoc({ url, protocol = 'ollama' }) {
 async function pollAll() {
   const list = upstreams.getEnabled();
   await Promise.allSettled(list.map(probe));
-  // Refresh the in-memory upstream cache so callers see updated joined health
-  upstreams.reload();
+  // NOTE: do NOT call upstreams.reload() here. probe() only updates the
+  // upstream_health table (latency / status), not the upstreams table itself,
+  // so the cache shape doesn't change. Calling reload() emits 'changed', and
+  // since this same module subscribes to 'changed' to fire pollAll(), it
+  // creates a back-to-back self-loop that fires roughly 10–20 times per
+  // second instead of the configured interval — observed 2026-05-10 as
+  // 7–12 parallel ESTABLISHED + heavy TIME_WAIT churn against the upstream
+  // Ollama hosts and ~22 Mbps RX with no external client present.
 }
 
 function scheduleNext() {
