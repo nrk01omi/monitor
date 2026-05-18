@@ -17,6 +17,9 @@ services:
       # After that, manage upstreams from the dashboard. host.docker.internal
       # works on Docker Desktop (Win/Mac) out of the box.
       OLLAMA_HOST: ${OLLAMA_HOST:-host.docker.internal:11434}
+      # whisper-server (faster-whisper) のエンドポイント。POST /api/transcribe を
+      # ここに stream pass-through する。同じ network なのでサービス名で解決。
+      WHISPER_URL: ${WHISPER_URL:-http://whisper-server:11436}
       # Monitor poll cadence + retention. Override per environment if needed.
       MONITOR_POLL_SECONDS: ${MONITOR_POLL_SECONDS:-10}
       MONITOR_RETENTION_DAYS: ${MONITOR_RETENTION_DAYS:-7}
@@ -34,8 +37,32 @@ services:
       - default
       - n8n_default
 
+  whisper-server:
+    build: ../whisper-server
+    container_name: whisper-server
+    restart: unless-stopped
+    environment:
+      WHISPER_MODEL: ${WHISPER_MODEL:-large-v3-turbo}
+      WHISPER_DEVICE: ${WHISPER_DEVICE:-auto}
+      WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-auto}
+    volumes:
+      # モデル本体は数GBあるので named volume にキャッシュ。再起動時の再DLを避ける。
+      - whisper-cache:/cache/huggingface
+    # GPU 利用前提。CPU で動かす場合はこの deploy ブロックごと削除し、
+    # whisper-server/Dockerfile の base を python:3.12-slim に変更する。
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    networks:
+      - default
+
 volumes:
   ollama-proxy-data:
+  whisper-cache:
 
 networks:
   n8n_default:
